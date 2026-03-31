@@ -1,0 +1,11 @@
+{
+  "packages": [
+    "golang"
+  ],
+  "create": {
+    "allowed-domains": [
+      "default",
+      "golang"
+    ]
+  }
+}
