@@ -40,7 +40,7 @@ Agent Container              auth-proxy                    Internet
 - **Always override auth headers** — the agent has dummy placeholder credentials (e.g., `ANTHROPIC_API_KEY=paude-proxy-managed`). The proxy always replaces the auth header with real credentials, even if the agent already set one. The agent should never control which credentials are used.
 - **If a credential env var is unset, pass through without injection** — no error, just no injection
 - **Domain filter format must match paude's conventions**: exact (`api.example.com`), wildcard suffix (`.example.com`), regex (`~pattern`)
-- **Token vending for gcloud ADC** — the agent has a stub ADC file with dummy `refresh_token`. When the agent's Google Auth library POSTs to `oauth2.googleapis.com/token`, the proxy intercepts the request and returns a real access token (obtained from the proxy's own real ADC). The agent never gets the refresh token or service account key.
+- **Token vending for gcloud ADC** — the agent has a stub ADC file with dummy `refresh_token`. When the agent's Google Auth library POSTs to `oauth2.googleapis.com/token`, the proxy intercepts and returns a **dummy** access token (`paude-proxy-managed`). The agent uses this dummy token in API calls, and the `GCloudInjector` overrides it with a real token at request time. The agent never sees any real credential — not the refresh token, not even a short-lived access token.
 - **First matching credential route wins** — order matters in the store
 - **Credential routing uses CONNECT target, never Host header** — goproxy sets `req.URL.Host` from the CONNECT target, which is what we use for domain matching. This prevents a malicious client from forging the Host header to redirect credentials.
 - **The proxy must never follow redirects** — pass 3xx responses back to the client. Following redirects could leak injected credentials to a redirect target on a different domain.
@@ -116,9 +116,9 @@ The orchestrator provides a **stub ADC file** in the agent container:
 
 The agent's Google Auth library reads this and POSTs to `oauth2.googleapis.com/token` to exchange the dummy refresh_token for an access token. This request goes through the proxy (HTTP_PROXY is set).
 
-The proxy's **token vendor** intercepts this request: instead of forwarding it (which would fail), it uses the proxy's own real ADC to obtain a fresh access token, and returns it to the agent in the standard OAuth2 response format.
+The proxy's **token vendor** intercepts this request and returns a **dummy** access token (`paude-proxy-managed`). The agent then uses this dummy token in API calls to `*.googleapis.com`. The `GCloudInjector` overrides the dummy Bearer header with a real token (from the proxy's own ADC) before forwarding to Google.
 
-The agent gets a real but short-lived access token (~1 hour). It never sees the refresh token or service account key. The proxy also overrides the Bearer token on subsequent API calls to `*.googleapis.com` as a belt-and-suspenders measure.
+The agent never sees any real credential — not the refresh token, not the service account key, and not even a short-lived access token.
 
 ### Cursor
 
@@ -131,7 +131,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 | `ANTHROPIC_API_KEY=paude-proxy-managed` | Real `x-api-key: sk-ant-...` |
 | `OPENAI_API_KEY=paude-proxy-managed` | Real `Authorization: Bearer sk-...` |
 | `GH_TOKEN=paude-proxy-managed` | Real `Authorization: token ghp_...` |
-| Stub ADC with dummy refresh_token | Real OAuth2 access_token via token vending |
+| Stub ADC with dummy refresh_token | Dummy token from vendor, real token injected at API call time |
 
 ## Project Layout
 

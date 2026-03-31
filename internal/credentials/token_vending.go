@@ -9,21 +9,21 @@ import (
 )
 
 // TokenVendor intercepts OAuth2 token exchange requests from the agent's
-// Google Auth library and returns real tokens obtained from the proxy's ADC.
+// Google Auth library and returns dummy tokens.
 //
 // The agent has a stub ADC file with dummy credentials. When its auth library
 // tries to exchange these for an access token (POST oauth2.googleapis.com/token),
-// the proxy intercepts the request and returns a real token instead.
+// the proxy intercepts and returns a dummy token. The agent uses this dummy
+// token in subsequent API calls, and the GCloudInjector overrides it with
+// a real token before forwarding to upstream.
 //
-// This prevents the agent from ever seeing the real refresh token or service
-// account key, while giving it short-lived access tokens (~1 hour).
-type TokenVendor struct {
-	gcloud *GCloudInjector
-}
+// This means the agent never sees any real credential — not the refresh token,
+// not the service account key, and not even a short-lived access token.
+type TokenVendor struct{}
 
-// NewTokenVendor creates a token vendor backed by a GCloudInjector.
-func NewTokenVendor(gcloud *GCloudInjector) *TokenVendor {
-	return &TokenVendor{gcloud: gcloud}
+// NewTokenVendor creates a token vendor.
+func NewTokenVendor() *TokenVendor {
+	return &TokenVendor{}
 }
 
 // tokenResponse matches Google's OAuth2 token endpoint response format.
@@ -48,28 +48,11 @@ func IsTokenExchange(req *http.Request) bool {
 }
 
 // HandleTokenExchange responds to an OAuth2 token exchange request with
-// a real access token from the proxy's ADC. Returns nil if the token
-// vendor is not available or token refresh fails (caller should forward
-// the request to upstream in that case).
+// a dummy access token. The real token injection happens later via the
+// GCloudInjector when the agent makes API calls to *.googleapis.com.
 func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
-	if tv.gcloud == nil {
-		log.Printf("WARN token exchange intercepted but no gcloud ADC configured")
-		return nil
-	}
-
-	if err := tv.gcloud.init(); err != nil {
-		log.Printf("ERROR token vendor: gcloud init failed: %v", err)
-		return nil
-	}
-
-	token, err := tv.gcloud.credentials.TokenSource.Token()
-	if err != nil {
-		log.Printf("ERROR token vendor: token refresh failed: %v", err)
-		return nil
-	}
-
 	resp := &tokenResponse{
-		AccessToken: token.AccessToken,
+		AccessToken: "paude-proxy-managed",
 		ExpiresIn:   3600,
 		TokenType:   "Bearer",
 	}
@@ -80,7 +63,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 		return nil
 	}
 
-	log.Printf("TOKEN_VEND host=%s path=%s (returned real token, expires_in=%d)", req.URL.Host, req.URL.Path, resp.ExpiresIn)
+	log.Printf("TOKEN_VEND host=%s path=%s (returned dummy token, real injection at request time)", req.URL.Host, req.URL.Path)
 
 	return &http.Response{
 		StatusCode:    http.StatusOK,
