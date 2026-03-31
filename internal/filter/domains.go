@@ -40,6 +40,7 @@ func NewDomainFilter(domainList string) *DomainFilter {
 		if d == "" {
 			continue
 		}
+		d = strings.ToLower(d)
 
 		if strings.HasPrefix(d, "~") {
 			pattern := d[1:]
