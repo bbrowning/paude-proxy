@@ -14,7 +14,7 @@ import (
 
 // GCloudInjector injects OAuth2 bearer tokens obtained from
 // Google Application Default Credentials. It handles automatic
-// token refresh.
+// token refresh. Always overrides any existing Authorization header.
 type GCloudInjector struct {
 	mu          sync.RWMutex
 	credentials *google.Credentials
@@ -55,19 +55,13 @@ func (g *GCloudInjector) init() error {
 	return g.initErr
 }
 
-// Inject adds an Authorization: Bearer header with a fresh OAuth2 token.
+// Inject sets the Authorization: Bearer header with a fresh OAuth2 token.
+// Always overrides — the agent may have a token from a dummy ADC file.
 func (g *GCloudInjector) Inject(req *http.Request) {
-	if req.Header.Get("Authorization") != "" {
-		return
-	}
-
 	if err := g.init(); err != nil {
 		log.Printf("ERROR gcloud credential init failed: %v", err)
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
-	defer cancel()
 
 	token, err := g.credentials.TokenSource.Token()
 	if err != nil {
@@ -76,10 +70,6 @@ func (g *GCloudInjector) Inject(req *http.Request) {
 	}
 
 	if !token.Valid() {
-		// Force a new token fetch
-		ctx2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel2()
-		_ = ctx2 // token source handles refresh internally
 		log.Printf("WARN gcloud token is invalid after refresh")
 		return
 	}

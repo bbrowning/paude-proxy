@@ -18,6 +18,7 @@ type Config struct {
 	CA           *CA
 	DomainFilter *filter.DomainFilter
 	CredStore    *credentials.Store
+	TokenVendor  *credentials.TokenVendor
 	Verbose      bool
 }
 
@@ -48,7 +49,8 @@ func New(cfg Config) *http.Server {
 	)
 
 	// Handle all requests (both plain HTTP and MITM'd HTTPS):
-	// inject credentials based on destination domain.
+	// - Intercept OAuth2 token exchanges (return real tokens from proxy's ADC)
+	// - Inject credentials based on destination domain
 	proxy.OnRequest().DoFunc(
 		func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			hostname := stripPort(req.URL.Host)
@@ -63,7 +65,20 @@ func New(cfg Config) *http.Server {
 				)
 			}
 
-			// Inject credentials
+			// Intercept OAuth2 token exchange requests.
+			// The agent has a stub ADC file and its Google Auth library
+			// tries to exchange dummy credentials for a token. We intercept
+			// this and return a real token from the proxy's own ADC.
+			if cfg.TokenVendor != nil && credentials.IsTokenExchange(req) {
+				if resp := cfg.TokenVendor.HandleTokenExchange(req); resp != nil {
+					return req, resp
+				}
+				// If token vending fails, fall through to forward the request
+				// (it will likely fail at Google's end with the dummy creds,
+				// but at least the error message will be meaningful)
+			}
+
+			// Inject credentials for API requests
 			if cfg.CredStore != nil {
 				cfg.CredStore.InjectCredentials(req)
 			}

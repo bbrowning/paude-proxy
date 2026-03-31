@@ -66,7 +66,7 @@ func TestStore_InjectCredentials_NoMatch(t *testing.T) {
 	}
 }
 
-func TestStore_InjectCredentials_NoOverwrite(t *testing.T) {
+func TestStore_InjectCredentials_AlwaysOverrides(t *testing.T) {
 	store := NewStore()
 	store.AddRoute(Route{
 		DomainSuffix: ".openai.com",
@@ -77,11 +77,12 @@ func TestStore_InjectCredentials_NoOverwrite(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com"},
 		Header: make(http.Header),
 	}
-	req.Header.Set("Authorization", "Bearer agent-token")
+	// Agent sets a dummy/placeholder token
+	req.Header.Set("Authorization", "Bearer paude-proxy-managed")
 
 	store.InjectCredentials(req)
-	if got := req.Header.Get("Authorization"); got != "Bearer agent-token" {
-		t.Errorf("should not overwrite existing header: got %q", got)
+	if got := req.Header.Get("Authorization"); got != "Bearer proxy-token" {
+		t.Errorf("proxy should override agent's dummy token: got %q, want %q", got, "Bearer proxy-token")
 	}
 }
 
@@ -94,12 +95,12 @@ func TestAPIKeyInjector(t *testing.T) {
 		t.Errorf("x-api-key = %q, want %q", got, "sk-ant-test")
 	}
 
-	// Should not overwrite
+	// Should override existing (agent may have a dummy placeholder)
 	req2 := &http.Request{Header: make(http.Header)}
-	req2.Header.Set("x-api-key", "existing")
+	req2.Header.Set("x-api-key", "paude-proxy-managed")
 	inj.Inject(req2)
-	if got := req2.Header.Get("x-api-key"); got != "existing" {
-		t.Errorf("should not overwrite: got %q", got)
+	if got := req2.Header.Get("x-api-key"); got != "sk-ant-test" {
+		t.Errorf("should override dummy key: got %q, want %q", got, "sk-ant-test")
 	}
 }
 

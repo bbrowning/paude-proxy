@@ -37,10 +37,10 @@ Agent Container              auth-proxy                    Internet
 
 ## Key Design Rules
 
-- **Only inject if the header is NOT already present** — allows agent-side overrides
+- **Always override auth headers** — the agent has dummy placeholder credentials (e.g., `ANTHROPIC_API_KEY=paude-proxy-managed`). The proxy always replaces the auth header with real credentials, even if the agent already set one. The agent should never control which credentials are used.
 - **If a credential env var is unset, pass through without injection** — no error, just no injection
 - **Domain filter format must match paude's conventions**: exact (`api.example.com`), wildcard suffix (`.example.com`), regex (`~pattern`)
-- **OAuth endpoints (`accounts.google.com`, `oauth2.googleapis.com`) must NOT have credentials injected** — the OAuth flow handles its own auth. Only inject Bearer tokens for `*.googleapis.com` API calls.
+- **Token vending for gcloud ADC** — the agent has a stub ADC file with dummy `refresh_token`. When the agent's Google Auth library POSTs to `oauth2.googleapis.com/token`, the proxy intercepts the request and returns a real access token (obtained from the proxy's own real ADC). The agent never gets the refresh token or service account key.
 - **First matching credential route wins** — order matters in the store
 - **Credential routing uses CONNECT target, never Host header** — goproxy sets `req.URL.Host` from the CONNECT target, which is what we use for domain matching. This prevents a malicious client from forging the Host header to redirect credentials.
 - **The proxy must never follow redirects** — pass 3xx responses back to the client. Following redirects could leak injected credentials to a redirect target on a different domain.
@@ -87,6 +87,51 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `github.com`, `api.github.com` | `Authorization: token <pat>` | `GH_TOKEN` |
 | `*.githubusercontent.com` | `Authorization: token <pat>` | `GH_TOKEN` |
 | `*.googleapis.com` | `Authorization: Bearer <token>` | gcloud ADC (auto-refresh) |
+
+## Client Compatibility
+
+Agent SDKs need credentials to initialize. Without them, they fail before making any HTTP request. The solution: give agents **dummy placeholder credentials** that satisfy SDK init, then the proxy overrides them with real values.
+
+### Static API keys (Anthropic, OpenAI, Cursor, GitHub)
+
+The orchestrator (paude) sets dummy env vars in the agent container:
+```
+ANTHROPIC_API_KEY=paude-proxy-managed
+OPENAI_API_KEY=paude-proxy-managed
+GH_TOKEN=paude-proxy-managed
+```
+The SDK initializes, sends requests with the dummy key in headers. The proxy **always overrides** the header with the real key before forwarding upstream.
+
+### gcloud ADC (Vertex AI, Gemini)
+
+The orchestrator provides a **stub ADC file** in the agent container:
+```json
+{
+  "type": "authorized_user",
+  "client_id": "paude-proxy-managed",
+  "client_secret": "paude-proxy-managed",
+  "refresh_token": "paude-proxy-managed"
+}
+```
+
+The agent's Google Auth library reads this and POSTs to `oauth2.googleapis.com/token` to exchange the dummy refresh_token for an access token. This request goes through the proxy (HTTP_PROXY is set).
+
+The proxy's **token vendor** intercepts this request: instead of forwarding it (which would fail), it uses the proxy's own real ADC to obtain a fresh access token, and returns it to the agent in the standard OAuth2 response format.
+
+The agent gets a real but short-lived access token (~1 hour). It never sees the refresh token or service account key. The proxy also overrides the Bearer token on subsequent API calls to `*.googleapis.com` as a belt-and-suspenders measure.
+
+### Cursor
+
+Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY`. The orchestrator provides a dummy `CURSOR_API_KEY=paude-proxy-managed`. The proxy overrides the auth header.
+
+### What agents see vs what's real
+
+| What agent has | What proxy injects |
+|---|---|
+| `ANTHROPIC_API_KEY=paude-proxy-managed` | Real `x-api-key: sk-ant-...` |
+| `OPENAI_API_KEY=paude-proxy-managed` | Real `Authorization: Bearer sk-...` |
+| `GH_TOKEN=paude-proxy-managed` | Real `Authorization: token ghp_...` |
+| Stub ADC with dummy refresh_token | Real OAuth2 access_token via token vending |
 
 ## Project Layout
 

@@ -44,8 +44,8 @@ func main() {
 		log.Printf("Domain filtering: ENABLED (%s)", allowedDomains)
 	}
 
-	// Credential store
-	credStore := buildCredentialStore(domainFilter)
+	// Credential store and token vendor
+	credStore, tokenVendor := buildCredentialStore(domainFilter)
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
@@ -53,6 +53,7 @@ func main() {
 		CA:           ca,
 		DomainFilter: domainFilter,
 		CredStore:    credStore,
+		TokenVendor:  tokenVendor,
 		Verbose:      verbose,
 	})
 
@@ -89,8 +90,9 @@ var credentialDomains = map[string][]string{
 	"GOOGLE_APPLICATION_CREDENTIALS": {".googleapis.com"},
 }
 
-func buildCredentialStore(domainFilter *filter.DomainFilter) *credentials.Store {
+func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store, *credentials.TokenVendor) {
 	store := credentials.NewStore()
+	var tokenVendor *credentials.TokenVendor
 	hasCredentials := false
 
 	// Anthropic: x-api-key header
@@ -142,6 +144,12 @@ func buildCredentialStore(domainFilter *filter.DomainFilter) *credentials.Store 
 	}
 
 	// Google Cloud / Vertex AI: OAuth2 Bearer from ADC
+	// Two mechanisms:
+	// 1. Token vending: intercept agent's OAuth2 token exchange (POST
+	//    oauth2.googleapis.com/token) and return a real token. The agent's
+	//    Google Auth library uses a stub ADC with dummy credentials.
+	// 2. Header injection: override Authorization header on API requests
+	//    to *.googleapis.com (in case the agent got a token some other way).
 	adcPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 	if adcPath != "" {
 		gcloudInjector := credentials.NewGCloudInjector(adcPath)
@@ -150,7 +158,9 @@ func buildCredentialStore(domainFilter *filter.DomainFilter) *credentials.Store 
 				DomainSuffix: ".googleapis.com",
 				Injector:     gcloudInjector,
 			})
+			tokenVendor = credentials.NewTokenVendor(gcloudInjector)
 			log.Println("Credential route: *.googleapis.com -> gcloud ADC Bearer token")
+			log.Println("Token vendor: ENABLED (intercepts oauth2.googleapis.com/token)")
 			hasCredentials = true
 		} else {
 			log.Printf("WARN: GOOGLE_APPLICATION_CREDENTIALS=%s but ADC not loadable", adcPath)
@@ -180,7 +190,7 @@ func buildCredentialStore(domainFilter *filter.DomainFilter) *credentials.Store 
 		}
 	}
 
-	return store
+	return store, tokenVendor
 }
 
 func envOr(key, fallback string) string {
