@@ -21,8 +21,8 @@ func TestGenerateCA(t *testing.T) {
 	if !ca.Certificate.IsCA {
 		t.Error("certificate should be a CA")
 	}
-	if ca.Certificate.Subject.CommonName != "Auth Proxy CA" {
-		t.Errorf("CN = %q, want %q", ca.Certificate.Subject.CommonName, "Auth Proxy CA")
+	if ca.Certificate.Subject.CommonName != "Paude Proxy CA" {
+		t.Errorf("CN = %q, want %q", ca.Certificate.Subject.CommonName, "Paude Proxy CA")
 	}
 }
 

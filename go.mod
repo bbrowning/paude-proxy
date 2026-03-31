@@ -1,4 +1,4 @@
-module github.com/paude-group/auth-proxy
+module github.com/bbrowning/paude-proxy
 
 go 1.23
 

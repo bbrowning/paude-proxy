@@ -1,4 +1,4 @@
-# auth-proxy
+# paude-proxy
 
 A MITM credential-injecting HTTP proxy for AI agent containers. Intercepts HTTPS traffic, injects API credentials based on destination domain, and enforces domain allowlists.
 
@@ -18,7 +18,7 @@ Designed to keep credentials out of AI agent containers while allowing agents to
 The agent container has dummy placeholder credentials (`ANTHROPIC_API_KEY=paude-proxy-managed`, stub ADC file with dummy refresh_token). The proxy always overrides auth headers with real credentials before forwarding to upstream.
 
 ```
-Agent Container              auth-proxy                    Internet
+Agent Container              paude-proxy                   Internet
  (dummy credentials)         (real credentials)
       |                           |
       |-- CONNECT api.openai.com ->|
@@ -37,9 +37,9 @@ All configuration via environment variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `AUTH_PROXY_LISTEN` | Listen address | `:3128` |
-| `AUTH_PROXY_CA_DIR` | Directory for generated CA cert/key | `/data/ca` |
-| `AUTH_PROXY_VERBOSE` | Enable verbose logging | `0` |
+| `PAUDE_PROXY_LISTEN` | Listen address | `:3128` |
+| `PAUDE_PROXY_CA_DIR` | Directory for generated CA cert/key | `/data/ca` |
+| `PAUDE_PROXY_VERBOSE` | Enable verbose logging | `0` |
 | `ALLOWED_DOMAINS` | Comma-separated domain allowlist (empty = allow all) | |
 | `ANTHROPIC_API_KEY` | Injected as `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | Injected as `Authorization: Bearer` for `*.openai.com` | |
@@ -70,16 +70,16 @@ Requires Go 1.23+. After cloning, run `go mod tidy` to resolve dependencies.
 
 ## CA Certificate
 
-The proxy generates a CA certificate at startup in `AUTH_PROXY_CA_DIR`. This certificate must be trusted by the agent container:
+The proxy generates a CA certificate at startup in `PAUDE_PROXY_CA_DIR`. This certificate must be trusted by the agent container:
 
 ```bash
 # Copy CA cert from proxy container to agent container
 podman cp proxy:/data/ca/ca.crt /tmp/ca.crt
-podman cp /tmp/ca.crt agent:/etc/pki/ca-trust/source/anchors/auth-proxy-ca.crt
+podman cp /tmp/ca.crt agent:/etc/pki/ca-trust/source/anchors/paude-proxy-ca.crt
 podman exec agent update-ca-trust
 
 # For Node.js agents (Claude Code, Cursor, OpenClaw), also set:
-# NODE_EXTRA_CA_CERTS=/etc/pki/ca-trust/source/anchors/auth-proxy-ca.crt
+# NODE_EXTRA_CA_CERTS=/etc/pki/ca-trust/source/anchors/paude-proxy-ca.crt
 # For Python tools (pip, requests), set:
 # SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
 # REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt

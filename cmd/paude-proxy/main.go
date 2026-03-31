@@ -9,20 +9,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/paude-group/auth-proxy/internal/credentials"
-	"github.com/paude-group/auth-proxy/internal/filter"
-	"github.com/paude-group/auth-proxy/internal/proxy"
+	"github.com/bbrowning/paude-proxy/internal/credentials"
+	"github.com/bbrowning/paude-proxy/internal/filter"
+	"github.com/bbrowning/paude-proxy/internal/proxy"
 )
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	log.Println("auth-proxy starting")
+	log.Println("paude-proxy starting")
 
 	// Configuration from environment
-	listenAddr := envOr("AUTH_PROXY_LISTEN", ":3128")
-	caDir := envOr("AUTH_PROXY_CA_DIR", "/data/ca")
+	listenAddr := envOr("PAUDE_PROXY_LISTEN", ":3128")
+	caDir := envOr("PAUDE_PROXY_CA_DIR", "/data/ca")
 	allowedDomains := os.Getenv("ALLOWED_DOMAINS")
-	verbose := os.Getenv("AUTH_PROXY_VERBOSE") == "1"
+	verbose := os.Getenv("PAUDE_PROXY_VERBOSE") == "1"
 
 	// Generate CA
 	log.Println("Generating CA certificate...")
