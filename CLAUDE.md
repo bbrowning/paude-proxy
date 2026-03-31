@@ -42,6 +42,26 @@ Agent Container              auth-proxy                    Internet
 - **Domain filter format must match paude's conventions**: exact (`api.example.com`), wildcard suffix (`.example.com`), regex (`~pattern`)
 - **OAuth endpoints (`accounts.google.com`, `oauth2.googleapis.com`) must NOT have credentials injected** — the OAuth flow handles its own auth. Only inject Bearer tokens for `*.googleapis.com` API calls.
 - **First matching credential route wins** — order matters in the store
+- **Credential routing uses CONNECT target, never Host header** — goproxy sets `req.URL.Host` from the CONNECT target, which is what we use for domain matching. This prevents a malicious client from forging the Host header to redirect credentials.
+- **The proxy must never follow redirects** — pass 3xx responses back to the client. Following redirects could leak injected credentials to a redirect target on a different domain.
+- **Validate credential-domain binding at startup** — warn if a credential is configured but its domains aren't in `ALLOWED_DOMAINS`. Credentials should only be injectable for allowed domains.
+- **Log all credential injections** — every time a credential is injected, log the destination domain and credential type (never the credential value). This enables auditing.
+
+## Security Model
+
+The agent container is the threat actor. It can make arbitrary HTTP requests through the proxy. The proxy's job is to ensure credentials only go where they should.
+
+**What the proxy protects against:**
+- Agent reading credentials from filesystem/env (credentials only exist in the proxy container)
+- Credentials sent to wrong domains (hardcoded routing table, strict suffix matching)
+- Host header forgery (credential routing uses CONNECT target, not Host header)
+- Redirect-based credential leakage (proxy doesn't follow redirects)
+- Domain suffix confusion (`evil-openai.com` does NOT match `.openai.com`)
+
+**What the proxy does NOT protect against:**
+- Agent misusing credentials for their intended service (e.g., using a GitHub PAT to push code). Mitigate with fine-grained, least-privilege tokens.
+- APIs reflecting credentials in response bodies (rare, but possible in error messages). Accept as residual risk.
+- DNS rebinding (low risk in container environments with controlled DNS)
 
 ## Configuration (all via env vars)
 

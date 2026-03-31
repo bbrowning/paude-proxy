@@ -45,7 +45,7 @@ func main() {
 	}
 
 	// Credential store
-	credStore := buildCredentialStore()
+	credStore := buildCredentialStore(domainFilter)
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
@@ -79,7 +79,17 @@ func main() {
 	log.Println("Stopped")
 }
 
-func buildCredentialStore() *credentials.Store {
+// credentialDomains maps credential env vars to the domains they'll be injected for.
+// Used for startup validation: warn if credentials are configured but domains aren't allowed.
+var credentialDomains = map[string][]string{
+	"ANTHROPIC_API_KEY":              {".anthropic.com"},
+	"OPENAI_API_KEY":                 {".openai.com"},
+	"CURSOR_API_KEY":                 {".cursor.com", ".cursorapi.com"},
+	"GH_TOKEN":                       {"github.com", "api.github.com", ".githubusercontent.com"},
+	"GOOGLE_APPLICATION_CREDENTIALS": {".googleapis.com"},
+}
+
+func buildCredentialStore(domainFilter *filter.DomainFilter) *credentials.Store {
 	store := credentials.NewStore()
 	hasCredentials := false
 
@@ -149,6 +159,25 @@ func buildCredentialStore() *credentials.Store {
 
 	if !hasCredentials {
 		log.Println("No credential routes configured")
+	}
+
+	// Validate: warn if credentials are configured but their domains aren't allowed
+	if !domainFilter.AllowAll() {
+		for envVar, domains := range credentialDomains {
+			if os.Getenv(envVar) == "" {
+				continue
+			}
+			for _, domain := range domains {
+				// Test with a representative hostname
+				testHost := domain
+				if domain[0] == '.' {
+					testHost = "test" + domain
+				}
+				if !domainFilter.IsAllowed(testHost) {
+					log.Printf("WARN: %s is set but domain %s is not in ALLOWED_DOMAINS — credentials will never be injected for this domain", envVar, domain)
+				}
+			}
+		}
 	}
 
 	return store

@@ -1,6 +1,7 @@
 package credentials
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -59,12 +60,20 @@ func (s *Store) InjectCredentials(req *http.Request) bool {
 	host = strings.ToLower(host)
 
 	for _, route := range s.routes {
+		matched := false
+		matchedPattern := ""
+
 		if route.ExactDomain != "" && host == route.ExactDomain {
-			route.Injector.Inject(req)
-			return true
+			matched = true
+			matchedPattern = route.ExactDomain
+		} else if route.DomainSuffix != "" && strings.HasSuffix(host, route.DomainSuffix) {
+			matched = true
+			matchedPattern = "*" + route.DomainSuffix
 		}
-		if route.DomainSuffix != "" && strings.HasSuffix(host, route.DomainSuffix) {
+
+		if matched {
 			route.Injector.Inject(req)
+			log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
 			return true
 		}
 	}
