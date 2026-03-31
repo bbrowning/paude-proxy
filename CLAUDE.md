@@ -1,4 +1,4 @@
-# Auth Proxy
+# Paude Proxy
 
 MITM credential-injecting HTTP proxy for AI agent containers. Written in Go.
 
@@ -9,7 +9,7 @@ AI coding agents (Claude Code, Cursor, Gemini CLI) run in isolated containers. T
 ## Build and Test
 
 ```bash
-make build        # Build binary to bin/auth-proxy
+make build        # Build binary to bin/paude-proxy
 make test         # Run all tests
 make lint         # go vet
 make docker       # Build container image with podman
@@ -20,7 +20,7 @@ Requires Go 1.23+. After cloning, run `go mod tidy` to resolve dependencies.
 ## Architecture
 
 ```
-Agent Container              auth-proxy                    Internet
+Agent Container              paude-proxy                   Internet
  (no credentials)            (has credentials)
       |                           |
       |-- CONNECT example.com --->|
@@ -32,7 +32,7 @@ Agent Container              auth-proxy                    Internet
 
 - Uses `github.com/elazarl/goproxy` for MITM proxy
 - Uses `golang.org/x/oauth2/google` for gcloud ADC token refresh
-- Generates a self-signed ECDSA CA at startup, writes to `AUTH_PROXY_CA_DIR`
+- Generates a self-signed ECDSA CA at startup, writes to `PAUDE_PROXY_CA_DIR`
 - The CA cert must be copied to the agent container and trusted there (done by the orchestrator, not this project)
 
 ## Key Design Rules
@@ -67,9 +67,9 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 
 | Variable | Description | Default |
 |---|---|---|
-| `AUTH_PROXY_LISTEN` | Listen address | `:3128` |
-| `AUTH_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
-| `AUTH_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
+| `PAUDE_PROXY_LISTEN` | Listen address | `:3128` |
+| `PAUDE_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
+| `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
 | `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
@@ -135,7 +135,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 
 ## Project Layout
 
-- `cmd/auth-proxy/main.go` — entry point, config loading, credential store + token vendor assembly, startup validation
+- `cmd/paude-proxy/main.go` — entry point, config loading, credential store + token vendor assembly, startup validation
 - `internal/proxy/proxy.go` — core MITM proxy: CONNECT handling, domain filter, token vending intercept, credential injection
 - `internal/proxy/ca.go` — ECDSA P-256 CA cert/key generation
 - `internal/proxy/ca_test.go` — tests for CA generation and file writing
@@ -147,7 +147,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 - `internal/credentials/gcloud.go` — gcloud ADC OAuth2 token refresh via `golang.org/x/oauth2/google`
 - `internal/credentials/token_vending.go` — intercepts `POST oauth2.googleapis.com/token`, returns dummy tokens
 - `Dockerfile` — multi-stage build (Go builder + CentOS Stream 10 runtime with dnsmasq + tini)
-- `entrypoint.sh` — starts dnsmasq for DNS forwarding, then runs auth-proxy
+- `entrypoint.sh` — starts dnsmasq for DNS forwarding, then runs paude-proxy
 
 ## Current Status
 
@@ -164,21 +164,21 @@ All source code is scaffolded. The project has not been compiled or tested yet.
 4. **Manual MITM test** — run the proxy, test with curl through it:
    ```bash
    # Terminal 1: start proxy
-   ALLOWED_DOMAINS=httpbin.org AUTH_PROXY_CA_DIR=/tmp/auth-proxy-ca make run
+   ALLOWED_DOMAINS=httpbin.org PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
    # Terminal 2: test (use --proxy-cacert since system trust isn't updated)
-   curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
+   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
    ```
 5. **Credential injection test** — verify headers are injected:
    ```bash
    # Terminal 1: start with a test key
-   OPENAI_API_KEY=sk-test ALLOWED_DOMAINS=httpbin.org,.openai.com AUTH_PROXY_CA_DIR=/tmp/auth-proxy-ca make run
+   OPENAI_API_KEY=sk-test ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
    # Terminal 2: request to httpbin to see injected headers
-   curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
+   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
    # (httpbin.org won't get credentials injected since it's not in the routing table — test with a mock)
    ```
 6. **Domain filtering test** — verify blocked domains are rejected:
    ```bash
-   curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
+   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
    # Should fail with connection rejected
    ```
 7. **Token vending test** — verify dummy token response for oauth2.googleapis.com/token
@@ -211,28 +211,28 @@ A doc in the paude repo (`docs/AUTH_PROXY_INTEGRATION.md`) describes the integra
 For manual testing without a full container setup:
 ```bash
 # Terminal 1: run the proxy with domain filtering
-ALLOWED_DOMAINS=httpbin.org,.openai.com AUTH_PROXY_CA_DIR=/tmp/auth-proxy-ca make run
+ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
 
 # Terminal 2: test with curl
 # Use --proxy-cacert to trust the generated CA:
-curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
+curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
 
 # Test domain blocking:
-curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
+curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
 # Should fail with connection rejected
 
 # Test credential injection (start proxy with a key):
-OPENAI_API_KEY=sk-test123 ALLOWED_DOMAINS=httpbin.org,.openai.com AUTH_PROXY_CA_DIR=/tmp/auth-proxy-ca make run
+OPENAI_API_KEY=sk-test123 ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
 # Requests to *.openai.com will have Authorization: Bearer sk-test123 injected
 # Requests to httpbin.org will NOT have credentials (no matching route)
 
 # Test always-override behavior:
 # Even if curl sends -H "Authorization: Bearer dummy", the proxy replaces it
-curl --proxy-cacert /tmp/auth-proxy-ca/ca.crt -x http://localhost:3128 \
+curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 \
   -H "Authorization: Bearer dummy" https://api.openai.com/v1/models
 # The upstream receives "Bearer sk-test123", not "Bearer dummy"
 
 # Test gcloud ADC (requires a real ADC file):
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/adc.json ALLOWED_DOMAINS=.googleapis.com AUTH_PROXY_CA_DIR=/tmp/auth-proxy-ca make run
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/adc.json ALLOWED_DOMAINS=.googleapis.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
 # Requests to *.googleapis.com get a real OAuth2 Bearer token
 ```

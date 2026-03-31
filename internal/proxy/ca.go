@@ -37,8 +37,8 @@ func GenerateCA() (*CA, error) {
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			CommonName:   "Auth Proxy CA",
-			Organization: []string{"Auth Proxy"},
+			CommonName:   "Paude Proxy CA",
+			Organization: []string{"Paude Proxy"},
 		},
 		NotBefore:             time.Now().Add(-1 * time.Hour),
 		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),

@@ -8,8 +8,8 @@ import (
 
 	"github.com/elazarl/goproxy"
 
-	"github.com/paude-group/auth-proxy/internal/credentials"
-	"github.com/paude-group/auth-proxy/internal/filter"
+	"github.com/bbrowning/paude-proxy/internal/credentials"
+	"github.com/bbrowning/paude-proxy/internal/filter"
 )
 
 // Config holds proxy configuration.

@@ -4,7 +4,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-proxy ./cmd/auth-proxy/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /paude-proxy ./cmd/paude-proxy/
 
 # Runtime stage
 FROM quay.io/centos/centos:stream10
@@ -17,7 +17,7 @@ RUN dnf install -y dnsmasq curl && dnf clean all
 ADD https://github.com/krallin/tini/releases/download/v0.19.0/tini /usr/local/bin/tini
 RUN chmod +x /usr/local/bin/tini
 
-COPY --from=builder /auth-proxy /usr/local/bin/auth-proxy
+COPY --from=builder /paude-proxy /usr/local/bin/paude-proxy
 COPY entrypoint.sh /usr/local/bin/paude-entrypoint.sh
 RUN chmod +x /usr/local/bin/paude-entrypoint.sh
 

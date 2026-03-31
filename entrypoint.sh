@@ -48,6 +48,6 @@ DNSMASQ_PID=$!
 # Give dnsmasq a moment to start
 sleep 0.2
 
-# ── Auth Proxy ───────────────────────────────────────────────────────
-echo "Starting auth-proxy..."
-exec /usr/local/bin/auth-proxy
+# ── Paude Proxy ─────────────────────────────────────────────────────
+echo "Starting paude-proxy..."
+exec /usr/local/bin/paude-proxy

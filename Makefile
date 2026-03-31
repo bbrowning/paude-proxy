@@ -1,10 +1,10 @@
 .PHONY: build test lint clean docker
 
-BINARY := auth-proxy
-IMAGE := auth-proxy:latest
+BINARY := paude-proxy
+IMAGE := paude-proxy:latest
 
 build:
-	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/$(BINARY) ./cmd/auth-proxy/
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/$(BINARY) ./cmd/paude-proxy/
 
 test:
 	go test ./...
