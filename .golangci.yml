@@ -11,15 +11,14 @@ linters:
     - staticcheck
     - unused
     - ineffassign
-    - gofmt
-    - goimports
     - misspell
     - gosec
     - unconvert
 
-linters-settings:
-  gofmt:
-    simplify: true
-
-issues:
-  exclude-use-default: true
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
