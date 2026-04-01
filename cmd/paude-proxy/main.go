@@ -26,6 +26,18 @@ func main() {
 	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/squid-blocked.log")
 	otelPortsStr := os.Getenv("ALLOWED_OTEL_PORTS")
 
+	// Client IP filtering (optional, for defense-in-depth)
+	allowedClients := os.Getenv("PAUDE_PROXY_ALLOWED_CLIENTS")
+	clientFilter, err := proxy.NewClientFilter(allowedClients)
+	if err != nil {
+		log.Fatalf("Invalid PAUDE_PROXY_ALLOWED_CLIENTS: %v", err)
+	}
+	if clientFilter != nil {
+		log.Printf("Client IP filtering: ENABLED (%s)", clientFilter)
+	} else {
+		log.Println("Client IP filtering: DISABLED (all clients allowed)")
+	}
+
 	// Load existing CA or generate a new one
 	ca, err := proxy.LoadCAFromDir(caDir)
 	if err != nil {
@@ -85,6 +97,7 @@ func main() {
 		PortFilter:    portFilter,
 		BlockedLogger: blockedLogger,
 		Verbose:       verbose,
+		ClientFilter:  clientFilter,
 	})
 
 	// Graceful shutdown

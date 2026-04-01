@@ -110,20 +110,50 @@ The real ADC file must be mounted/injected into the **proxy** container instead,
 
 **How it works:** The agent's Google Auth library reads the stub, POSTs to `oauth2.googleapis.com/token` to exchange the dummy refresh_token. The proxy intercepts this request and returns a dummy access token. The agent uses this dummy token in API calls. The proxy's `GCloudInjector` replaces the dummy Bearer header with a real token (from the proxy's own ADC) before forwarding to Google. The agent never sees any real credential.
 
-### 5. Drop squid-specific configuration
+### 5. Source IP filtering and network isolation
+
+paude-proxy supports optional source IP filtering (`PAUDE_PROXY_ALLOWED_CLIENTS`) to restrict which clients can connect. This provides defense-in-depth alongside network isolation.
+
+**No secrets are given to the agent** — source IPs can't be spoofed (enforced by CNI/container runtime), so there is nothing for the agent to exfiltrate or reveal.
+
+**Podman/Docker (imperative orchestration):**
+
+1. Create a **dedicated network per session** — only the proxy and agent containers are on this network, isolating the proxy from other containers on the host
+2. After creating the agent container, get its IP (`podman inspect --format '{{.NetworkSettings.IPAddress}}'` or assign a static IP with `--ip`)
+3. Pass `PAUDE_PROXY_ALLOWED_CLIENTS=<agent-ip>` to the proxy container
+
+```bash
+podman network create session-abc123
+podman run --network session-abc123 --ip 10.89.0.5 --name agent ...
+podman run --network session-abc123 -e PAUDE_PROXY_ALLOWED_CLIENTS=10.89.0.5 --name proxy ...
+```
+
+**Kubernetes/OpenShift (GitOps/declarative):**
+
+Use NetworkPolicy as the primary control — no `PAUDE_PROXY_ALLOWED_CLIENTS` needed:
+- Proxy pod ingress: only from pods with label `role: paude-agent` (matching session)
+- Agent pod egress: only to pods with label `role: paude-proxy` (matching session)
+- Pre-generate the CA cert/key as a K8s Secret, mounted into both pods (breaks startup ordering dependency)
+
+**Where to change:**
+- `proxy_runner.py:_build_env_args()` — pass `PAUDE_PROXY_ALLOWED_CLIENTS=<agent-ip>` to proxy container
+- `proxy_runner.py:create_session_proxy()` — create a dedicated Podman network per session
+- For K8s: declare NetworkPolicy alongside pod specs in manifests
+
+### 6. Drop squid-specific configuration
 
 - **Remove `format_domains_as_squid_acls()` call** from `proxy_runner.py:_build_env_args()`. paude-proxy uses `ALLOWED_DOMAINS` (comma-separated), which is already passed. The `ALLOWED_DOMAIN_ACLS` env var is no longer needed.
 - **Remove `remove_wildcard_covered()`** from domain expansion. This function exists because squid treats `.example.com` as matching both `example.com` and `*.example.com`, making both a fatal config error. paude-proxy handles both forms independently — `.example.com` is a suffix match, `example.com` is exact. Having both is harmless.
 - **Keep `SQUID_DNS`** — paude-proxy's entrypoint reads this env var for custom DNS. The name is legacy but functional. Can optionally be renamed later.
 - **Keep `ALLOWED_OTEL_PORTS`** — paude-proxy uses this for port filtering (same format: comma-separated port numbers).
 
-### 6. Blocked domains CLI
+### 7. Blocked domains CLI
 
 The `paude blocked-domains` command reads `/tmp/squid-blocked.log` via `cat` inside the proxy container. paude-proxy writes to the same path in a compatible format. **No changes needed** — `proxy_log.py:parse_blocked_log()` will parse paude-proxy's output correctly.
 
 The `SQUID_BLOCKED_LOG_PATH` constant in `shared.py` can optionally be renamed, but the default path matches.
 
-### 7. Domain update (recreate proxy)
+### 8. Domain update (recreate proxy)
 
 `PodmanProxyManager.update_domains()` stops and recreates the proxy container with new domain configuration. This works as-is with paude-proxy. Since `/data/ca` is mounted as a volume, the CA cert persists across proxy recreations — no need to re-copy the cert to the agent container after domain updates.
 
@@ -143,6 +173,7 @@ Mount `/data/ca` as a named volume so the CA persists across restarts.
 | `CURSOR_API_KEY` | Real API key from host | **NEW** — move from agent |
 | `GH_TOKEN` | Real GitHub PAT from host | **NEW** — move from agent |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to real ADC JSON | **NEW** — mount file + set path |
+| `PAUDE_PROXY_ALLOWED_CLIENTS` | Agent container IP (e.g., `10.89.0.5`) | **NEW** — optional, for defense-in-depth |
 | `PAUDE_PROXY_VERBOSE` | `1` for debug logging | Optional |
 
 ### Agent container

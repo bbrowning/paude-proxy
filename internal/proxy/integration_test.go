@@ -430,3 +430,160 @@ func TestIntegration_TokenVending(t *testing.T) {
 		t.Logf("Token vendor did not intercept (expected for local server), status: %d", resp.StatusCode)
 	}
 }
+
+func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+
+	// Allow 127.0.0.1 (the test client's source IP)
+	cf, err := NewClientFilter("127.0.0.1")
+	if err != nil {
+		t.Fatalf("NewClientFilter: %v", err)
+	}
+
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:           ca,
+		DomainFilter: df,
+		ClientFilter: cf,
+	})
+	defer cleanup()
+
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request from allowed IP should succeed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+
+	// Allow only 10.99.99.99 — test client connects from 127.0.0.1, should be rejected
+	cf, err := NewClientFilter("10.99.99.99")
+	if err != nil {
+		t.Fatalf("NewClientFilter: %v", err)
+	}
+
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:           ca,
+		DomainFilter: df,
+		ClientFilter: cf,
+	})
+	defer cleanup()
+
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+	_, err = client.Get(upstream.URL + "/test")
+	if err == nil {
+		t.Error("request from non-allowed IP should fail")
+	}
+}
+
+func TestIntegration_ClientFilter_CIDR(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+
+	// Allow 127.0.0.0/8 — test client connects from 127.0.0.1, should match
+	cf, err := NewClientFilter("127.0.0.0/8")
+	if err != nil {
+		t.Fatalf("NewClientFilter: %v", err)
+	}
+
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:           ca,
+		DomainFilter: df,
+		ClientFilter: cf,
+	})
+	defer cleanup()
+
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request from CIDR-allowed IP should succeed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestIntegration_ClientFilter_Disabled(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+
+	// No client filter — all clients allowed
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:           ca,
+		DomainFilter: df,
+	})
+	defer cleanup()
+
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request without client filter should succeed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}

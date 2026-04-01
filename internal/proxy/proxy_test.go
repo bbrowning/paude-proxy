@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -140,5 +141,77 @@ func TestBlockedLogger(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "GET") || !strings.Contains(lines[1], "http://bad.com/path") {
 		t.Errorf("line 1 missing expected content: %s", lines[1])
+	}
+}
+
+func TestNewClientFilter(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantNil bool
+		wantErr bool
+	}{
+		{"empty", "", true, false},
+		{"single IP", "10.0.0.1", false, false},
+		{"multiple IPs", "10.0.0.1,10.0.0.2", false, false},
+		{"CIDR", "10.0.0.0/24", false, false},
+		{"mixed", "10.0.0.1,172.16.0.0/12", false, false},
+		{"with spaces", " 10.0.0.1 , 10.0.0.2 ", false, false},
+		{"invalid IP", "notanip", false, true},
+		{"invalid CIDR", "10.0.0.0/99", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf, err := NewClientFilter(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewClientFilter(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && (cf == nil) != tt.wantNil {
+				t.Errorf("NewClientFilter(%q) nil = %v, wantNil %v", tt.input, cf == nil, tt.wantNil)
+			}
+		})
+	}
+}
+
+func TestClientFilter_IsAllowed(t *testing.T) {
+	tests := []struct {
+		name    string
+		filter  string
+		testIP  string
+		allowed bool
+	}{
+		{"exact match", "10.0.0.5", "10.0.0.5", true},
+		{"no match", "10.0.0.5", "10.0.0.6", false},
+		{"CIDR match", "10.0.0.0/24", "10.0.0.42", true},
+		{"CIDR no match", "10.0.0.0/24", "10.0.1.1", false},
+		{"multiple IPs match second", "10.0.0.1,10.0.0.2", "10.0.0.2", true},
+		{"multiple IPs no match", "10.0.0.1,10.0.0.2", "10.0.0.3", false},
+		{"mixed match CIDR", "10.0.0.1,172.16.0.0/12", "172.20.5.3", true},
+		{"IPv6 exact", "::1", "::1", true},
+		{"IPv6 no match", "::1", "::2", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf, err := NewClientFilter(tt.filter)
+			if err != nil {
+				t.Fatalf("NewClientFilter(%q): %v", tt.filter, err)
+			}
+			ip := net.ParseIP(tt.testIP)
+			if ip == nil {
+				t.Fatalf("invalid test IP: %s", tt.testIP)
+			}
+			got := cf.IsAllowed(ip)
+			if got != tt.allowed {
+				t.Errorf("IsAllowed(%s) = %v, want %v", tt.testIP, got, tt.allowed)
+			}
+		})
+	}
+}
+
+func TestClientFilter_NilAllowsAll(t *testing.T) {
+	var cf *ClientFilter
+	if !cf.IsAllowed(net.ParseIP("1.2.3.4")) {
+		t.Error("nil ClientFilter should allow all IPs")
 	}
 }

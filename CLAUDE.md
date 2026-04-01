@@ -46,6 +46,7 @@ Agent Container              paude-proxy                   Internet
 - **The proxy must never follow redirects** — pass 3xx responses back to the client. Following redirects could leak injected credentials to a redirect target on a different domain.
 - **Validate credential-domain binding at startup** — warn if a credential is configured but its domains aren't in `ALLOWED_DOMAINS`. Credentials should only be injectable for allowed domains.
 - **Log all credential injections** — every time a credential is injected, log the destination domain and credential type (never the credential value). This enables auditing.
+- **Source IP filtering for defense-in-depth** — `PAUDE_PROXY_ALLOWED_CLIENTS` (optional) restricts which IPs can connect. In imperative deployments (paude with Podman/Docker), the orchestrator passes the agent's IP. In GitOps/K8s deployments, NetworkPolicy is the primary control and this can be omitted. No secrets are given to the agent — source IPs can't be spoofed (enforced by CNI/container runtime).
 
 ## Security Model
 
@@ -57,6 +58,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 - Host header forgery (credential routing uses CONNECT target, not Host header)
 - Redirect-based credential leakage (proxy doesn't follow redirects)
 - Domain suffix confusion (`evil-openai.com` does NOT match `.openai.com`)
+- Unauthorized proxy access (source IP filtering via `PAUDE_PROXY_ALLOWED_CLIENTS` + network isolation via dedicated container network or K8s NetworkPolicy)
 
 **What the proxy does NOT protect against:**
 - Agent misusing credentials for their intended service (e.g., using a GitHub PAT to push code). Mitigate with fine-grained, least-privilege tokens.
@@ -67,6 +69,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 
 | Variable | Description | Default |
 |---|---|---|
+| `PAUDE_PROXY_ALLOWED_CLIENTS` | Comma-separated IPs/CIDRs allowed to connect | (empty = all) |
 | `PAUDE_PROXY_LISTEN` | Listen address | `:3128` |
 | `PAUDE_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
 | `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
@@ -164,13 +167,6 @@ All source code is implemented, compiles cleanly, and all tests pass. Features:
 - DNS forwarding via dnsmasq
 - OpenShift-compatible container image
 
-## Why We Chose This Over Alternatives
-
-- **Aegis** (getaegis/aegis): TypeScript, supports static API keys but NO gcloud ADC/Vertex AI support, no MITM. Doesn't meet requirements.
-- **OpenShell router** (NVIDIA/OpenShell): Rust, internal component, static API keys only, no gcloud ADC, not standalone. Doesn't meet requirements.
-- **Envoy + Go filter**: Envoy is great for reverse proxy but MITM forward proxy with dynamic cert generation is complex in Envoy (SDS, internal listeners, CONNECT handling). goproxy is purpose-built for this. Envoy also adds ~60-100MB image size vs ~15MB for our static binary. The credential injection Go code is identical either way — the difference is the proxy plumbing, where goproxy wins for MITM forward proxy.
-- **Squid with ssl-bump**: Would need ICAP/eCAP adapter for credential injection. Much more complex config for the same result.
-
 ## Consumer: Paude
 
 This proxy is consumed by the [paude](https://github.com/paude-group/paude) project. Paude will:
@@ -198,6 +194,10 @@ curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://
 # Test domain blocking:
 curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
 # Should fail with connection rejected
+
+# Test source IP filtering:
+PAUDE_PROXY_ALLOWED_CLIENTS=127.0.0.1 ALLOWED_DOMAINS=httpbin.org PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
+# Requests from 127.0.0.1 succeed; requests from other IPs are rejected
 
 # Test credential injection (start proxy with a key):
 OPENAI_API_KEY=sk-test123 ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run

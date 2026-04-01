@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -103,6 +104,75 @@ func (bl *BlockedLogger) Close() error {
 	return bl.file.Close()
 }
 
+// ClientFilter validates client source IPs against an allowlist of IPs and CIDRs.
+// A nil or empty ClientFilter allows all clients.
+type ClientFilter struct {
+	ips  []net.IP
+	nets []*net.IPNet
+}
+
+// NewClientFilter parses a comma-separated list of IPs and CIDRs.
+// Returns nil if the input is empty (allow all).
+func NewClientFilter(s string) (*ClientFilter, error) {
+	if s == "" {
+		return nil, nil
+	}
+	cf := &ClientFilter{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "/") {
+			_, ipNet, err := net.ParseCIDR(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CIDR %q: %w", part, err)
+			}
+			cf.nets = append(cf.nets, ipNet)
+		} else {
+			ip := net.ParseIP(part)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid IP %q", part)
+			}
+			cf.ips = append(cf.ips, ip)
+		}
+	}
+	return cf, nil
+}
+
+// IsAllowed returns true if the given IP is in the allowlist.
+func (cf *ClientFilter) IsAllowed(ip net.IP) bool {
+	if cf == nil {
+		return true
+	}
+	for _, allowed := range cf.ips {
+		if allowed.Equal(ip) {
+			return true
+		}
+	}
+	for _, ipNet := range cf.nets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// String returns a human-readable representation of the filter.
+func (cf *ClientFilter) String() string {
+	if cf == nil {
+		return "disabled (all clients allowed)"
+	}
+	var parts []string
+	for _, ip := range cf.ips {
+		parts = append(parts, ip.String())
+	}
+	for _, ipNet := range cf.nets {
+		parts = append(parts, ipNet.String())
+	}
+	return strings.Join(parts, ", ")
+}
+
 // Config holds proxy configuration.
 type Config struct {
 	ListenAddr    string
@@ -113,6 +183,7 @@ type Config struct {
 	PortFilter    *PortFilter
 	BlockedLogger *BlockedLogger
 	Verbose       bool
+	ClientFilter  *ClientFilter // If non-nil, only listed IPs/CIDRs can connect
 }
 
 // New creates a configured goproxy server.
@@ -126,9 +197,18 @@ func New(cfg Config) *http.Server {
 	goproxy.MitmConnect = &goproxy.ConnectAction{Action: goproxy.ConnectMitm, TLSConfig: goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)}
 	goproxy.RejectConnect = &goproxy.ConnectAction{Action: goproxy.ConnectReject, TLSConfig: goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)}
 
-	// Handle CONNECT requests: port filtering, domain filtering, MITM
+	// Handle CONNECT requests: client filter, port filtering, domain filtering, MITM
 	proxy.OnRequest().HandleConnectFunc(
 		func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+			// Source IP filtering
+			if cfg.ClientFilter != nil {
+				srcIP := parseClientIP(ctx)
+				if srcIP == nil || !cfg.ClientFilter.IsAllowed(srcIP) {
+					log.Printf("CLIENT_REJECTED CONNECT %s from %s (not in allowed clients)", host, clientIP(ctx))
+					return goproxy.RejectConnect, host
+				}
+			}
+
 			hostname := stripPort(host)
 			port := extractPort(host, 443)
 
@@ -161,6 +241,20 @@ func New(cfg Config) *http.Server {
 	// - Suppress proxy identity headers
 	proxy.OnRequest().DoFunc(
 		func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			// Source IP filtering for plain HTTP proxy requests.
+			// MITM'd HTTPS requests already passed filtering in HandleConnectFunc.
+			if cfg.ClientFilter != nil && req.URL.Scheme == "http" {
+				srcIP := parseClientIP(ctx)
+				if srcIP == nil || !cfg.ClientFilter.IsAllowed(srcIP) {
+					log.Printf("CLIENT_REJECTED %s %s from %s (not in allowed clients)", req.Method, req.URL.String(), clientIP(ctx))
+					return req, goproxy.NewResponse(req,
+						goproxy.ContentTypeText,
+						http.StatusForbidden,
+						"Client IP not allowed by proxy policy",
+					)
+				}
+			}
+
 			hostname := stripPort(req.URL.Host)
 
 			// Port filtering for HTTP requests (Safe_ports).
@@ -240,7 +334,7 @@ func extractPort(host string, defaultPort int) int {
 	return defaultPort
 }
 
-// clientIP extracts the client IP from a goproxy context.
+// clientIP extracts the client IP string from a goproxy context (for logging).
 func clientIP(ctx *goproxy.ProxyCtx) string {
 	if ctx != nil && ctx.Req != nil {
 		ip := ctx.Req.RemoteAddr
@@ -251,4 +345,16 @@ func clientIP(ctx *goproxy.ProxyCtx) string {
 		return ip
 	}
 	return "-"
+}
+
+// parseClientIP extracts and parses the client IP from a goproxy context.
+func parseClientIP(ctx *goproxy.ProxyCtx) net.IP {
+	if ctx == nil || ctx.Req == nil {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(ctx.Req.RemoteAddr)
+	if err != nil {
+		return net.ParseIP(ctx.Req.RemoteAddr)
+	}
+	return net.ParseIP(host)
 }
