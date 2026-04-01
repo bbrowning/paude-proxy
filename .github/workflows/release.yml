@@ -105,7 +105,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           IS_PRERELEASE: ${{ steps.prerelease.outputs.is_prerelease }}
         run: |
-          IMAGE=quay.io/bbrowning/paude-proxy
+          IMAGE=quay.io/bbrowning/paude-proxy-go-centos10
           FULL="${IMAGE}:${VERSION}"
 
           podman manifest create "${FULL}"
