@@ -70,7 +70,7 @@ jobs:
           go-version: "1.23"
 
       - name: Run integration tests
-        run: go test -run TestIntegration ./...
+        run: go test -race -run TestIntegration ./...
 
   build:
     name: Build (${{ matrix.goarch }})
