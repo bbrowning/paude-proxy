@@ -1,4 +1,4 @@
-.PHONY: build test unit-test integration-test lint fmt-check clean docker
+.PHONY: build test unit-test integration-test lint fmt-check clean docker install-hooks
 
 BINARY := paude-proxy
 IMAGE := paude-proxy:latest
@@ -31,6 +31,9 @@ clean:
 
 docker:
 	podman build -t $(IMAGE) .
+
+install-hooks:
+	uvx pre-commit install
 
 run: build
 	./bin/$(BINARY)
