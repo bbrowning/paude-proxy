@@ -69,7 +69,7 @@ PAUDE_PROXY_CA_DIR=/tmp/proxy-ca \
 ./bin/paude-proxy
 ```
 
-Requests to `*.anthropic.com` get `x-api-key: sk-ant-real-key`. Requests to `*.openai.com` get `Authorization: Bearer sk-real-key`. Requests to `github.com` get `Authorization: token ghp_real-token`. Requests to any other domain are blocked by the domain filter.
+Requests to `*.anthropic.com` get `x-api-key: sk-ant-real-key`. Requests to `*.openai.com` get `Authorization: Bearer sk-real-key`. Requests to `github.com` get `Authorization: Bearer ghp_real-token`. Requests to any other domain are blocked by the domain filter.
 
 ### Routing any application through the proxy
 
@@ -172,7 +172,7 @@ This prevents other containers or processes on the network from using the proxy 
 | `ANTHROPIC_API_KEY` | `*.anthropic.com` | `x-api-key: <key>` |
 | `OPENAI_API_KEY` | `*.openai.com` | `Authorization: Bearer <key>` |
 | `CURSOR_API_KEY` | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` |
-| `GH_TOKEN` | `github.com`, `api.github.com`, `*.githubusercontent.com` | `Authorization: token <pat>` |
+| `GH_TOKEN` | `github.com`, `api.github.com`, `*.githubusercontent.com` | `Authorization: Bearer <pat>` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `*.googleapis.com` | `Authorization: Bearer <token>` (auto-refreshed OAuth2) |
 
 Only set the env vars for the providers you need. If an env var is unset, the proxy passes requests to that domain through without credential injection.
@@ -228,7 +228,7 @@ The config file maps environment variables to injector types and domain patterns
     },
     {
       "env_var": "GH_TOKEN",
-      "injector": "github_token",
+      "injector": "bearer",
       "domains": ["github.com", "api.github.com", ".githubusercontent.com"]
     },
     {
@@ -246,7 +246,6 @@ The config file maps environment variables to injector types and domain patterns
 |---|---|---|
 | `bearer` | Sets `Authorization: Bearer <value>` | — |
 | `api_key` | Sets a custom header with the credential value | `header_name` |
-| `github_token` | Sets `Authorization: token <value>` | — |
 | `gcloud` | OAuth2 Bearer token from ADC (auto-refreshed); also enables token vending | — |
 
 **Domain patterns:** Prefix with `.` for wildcard suffix matching (`.openai.com` matches `api.openai.com`). Without a prefix, matches exactly (`github.com` matches only `github.com`).
@@ -281,7 +280,7 @@ Requires Go 1.23+. After cloning, run `go mod tidy` to resolve dependencies.
 The proxy is designed for scenarios where the client is **untrusted** (e.g., an AI agent that could be prompt-injected into attempting credential exfiltration). It protects against:
 
 - **Credential theft from filesystem/env** — real credentials only exist in the proxy process, never in the client's environment
-- **Credentials sent to wrong domains** — hardcoded routing table with strict suffix matching (`evil-openai.com` does NOT match `.openai.com`)
+- **Credentials sent to wrong domains** — routing table with strict suffix matching (`evil-openai.com` does NOT match `.openai.com`)
 - **Host header forgery** — credential routing uses the CONNECT target (from the TCP connection), not the Host header
 - **Redirect-based credential leakage** — proxy never follows redirects; 3xx responses pass through to the client
 - **Unauthorized proxy access** — source IP filtering + network isolation

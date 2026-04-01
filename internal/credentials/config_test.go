@@ -42,7 +42,7 @@ func TestParseConfig_AllInjectorTypes(t *testing.T) {
 		"credentials": [
 			{"env_var": "A", "injector": "bearer", "domains": [".a.com"]},
 			{"env_var": "B", "injector": "api_key", "params": {"header_name": "x-key"}, "domains": [".b.com"]},
-			{"env_var": "C", "injector": "github_token", "domains": ["c.com"]},
+			{"env_var": "C", "injector": "bearer", "domains": ["c.com"]},
 			{"env_var": "D", "injector": "gcloud", "domains": [".d.com"]}
 		]
 	}`)
@@ -224,14 +224,14 @@ func TestBuildFromConfig_APIKey(t *testing.T) {
 	}
 }
 
-func TestBuildFromConfig_GitHubToken(t *testing.T) {
+func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 	t.Setenv("TEST_GH_TOKEN", "ghp_test")
 
 	cfg := &CredentialConfig{
 		Credentials: []CredentialEntry{
 			{
 				EnvVar:       "TEST_GH_TOKEN",
-				InjectorType: "github_token",
+				InjectorType: "bearer",
 				Domains:      []string{"github.com", "api.github.com", ".githubusercontent.com"},
 			},
 		},
@@ -247,8 +247,8 @@ func TestBuildFromConfig_GitHubToken(t *testing.T) {
 	if !store.InjectCredentials(req) {
 		t.Error("should match github.com")
 	}
-	if got := req.Header.Get("Authorization"); got != "token ghp_test" {
-		t.Errorf("Authorization = %q, want %q", got, "token ghp_test")
+	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer ghp_test")
 	}
 
 	// Test suffix domain match
@@ -259,8 +259,8 @@ func TestBuildFromConfig_GitHubToken(t *testing.T) {
 	if !store.InjectCredentials(req2) {
 		t.Error("should match raw.githubusercontent.com")
 	}
-	if got := req2.Header.Get("Authorization"); got != "token ghp_test" {
-		t.Errorf("Authorization = %q, want %q", got, "token ghp_test")
+	if got := req2.Header.Get("Authorization"); got != "Bearer ghp_test" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer ghp_test")
 	}
 }
 
@@ -351,7 +351,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		Credentials: []CredentialEntry{
 			{
 				EnvVar:       "TEST_MIX_KEY",
-				InjectorType: "github_token",
+				InjectorType: "bearer",
 				Domains:      []string{"exact.com", ".suffix.com"},
 			},
 		},

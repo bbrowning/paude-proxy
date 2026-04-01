@@ -80,7 +80,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
 | `CURSOR_API_KEY` | -> `Authorization: Bearer` for `*.cursor.com`, `*.cursorapi.com` | |
-| `GH_TOKEN` | -> `Authorization: token` for `github.com`, `*.githubusercontent.com` | |
+| `GH_TOKEN` | -> `Authorization: Bearer` for `github.com`, `*.githubusercontent.com` | |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to gcloud ADC JSON | |
 
 ## Credential Routing Table
@@ -92,8 +92,8 @@ The default credential routing is defined in `internal/credentials/credentials.j
 | `*.anthropic.com` | `x-api-key: <key>` | `ANTHROPIC_API_KEY` |
 | `*.openai.com` | `Authorization: Bearer <key>` | `OPENAI_API_KEY` |
 | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` | `CURSOR_API_KEY` |
-| `github.com`, `api.github.com` | `Authorization: token <pat>` | `GH_TOKEN` |
-| `*.githubusercontent.com` | `Authorization: token <pat>` | `GH_TOKEN` |
+| `github.com`, `api.github.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
+| `*.githubusercontent.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
 | `*.googleapis.com` | `Authorization: Bearer <token>` | gcloud ADC (auto-refresh) |
 
 ## Client Compatibility
@@ -138,7 +138,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 |---|---|
 | `ANTHROPIC_API_KEY=paude-proxy-managed` | Real `x-api-key: sk-ant-...` |
 | `OPENAI_API_KEY=paude-proxy-managed` | Real `Authorization: Bearer sk-...` |
-| `GH_TOKEN=paude-proxy-managed` | Real `Authorization: token ghp_...` |
+| `GH_TOKEN=paude-proxy-managed` | Real `Authorization: Bearer ghp_...` |
 | Stub ADC with dummy refresh_token | Dummy token from vendor, real token injected at API call time |
 
 ## Project Layout
@@ -153,7 +153,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 - `internal/filter/domains_test.go` — tests for all domain matching patterns
 - `internal/credentials/store.go` — credential route store, domain-to-injector matching, injection logging
 - `internal/credentials/store_test.go` — tests for routing, override behavior, first-match-wins
-- `internal/credentials/static.go` — always-override injectors: Bearer, API key, GitHub token
+- `internal/credentials/static.go` — always-override injectors: Bearer, API key, generic header
 - `internal/credentials/gcloud.go` — gcloud ADC OAuth2 token refresh via `golang.org/x/oauth2/google`
 - `internal/credentials/token_vending.go` — intercepts `POST oauth2.googleapis.com/token`, returns dummy tokens
 - `Dockerfile` — multi-stage build (Go builder + CentOS Stream 10 runtime with dnsmasq + tini)

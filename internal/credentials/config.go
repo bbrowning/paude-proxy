@@ -23,7 +23,7 @@ type CredentialEntry struct {
 	// EnvVar is the environment variable name to read the credential from.
 	EnvVar string `json:"env_var"`
 
-	// InjectorType is one of: "bearer", "api_key", "github_token", "gcloud".
+	// InjectorType is one of: "bearer", "api_key", "gcloud".
 	InjectorType string `json:"injector"`
 
 	// Params holds injector-specific parameters (e.g., "header_name" for api_key).
@@ -36,10 +36,9 @@ type CredentialEntry struct {
 }
 
 var validInjectorTypes = map[string]bool{
-	"bearer":       true,
-	"api_key":      true,
-	"github_token": true,
-	"gcloud":       true,
+	"bearer":  true,
+	"api_key": true,
+	"gcloud":  true,
 }
 
 // ParseConfig parses and validates a credential config from JSON bytes.
@@ -54,7 +53,7 @@ func ParseConfig(data []byte) (*CredentialConfig, error) {
 			return nil, fmt.Errorf("credential entry %d: env_var is required", i)
 		}
 		if !validInjectorTypes[entry.InjectorType] {
-			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, github_token, gcloud)", i, entry.EnvVar, entry.InjectorType)
+			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud)", i, entry.EnvVar, entry.InjectorType)
 		}
 		if len(entry.Domains) == 0 {
 			return nil, fmt.Errorf("credential entry %d (%s): at least one domain is required", i, entry.EnvVar)
@@ -115,8 +114,6 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 				HeaderName: entry.Params["header_name"],
 				Key:        value,
 			}
-		case "github_token":
-			injector = &GitHubTokenInjector{Token: value}
 		case "gcloud":
 			gcloudInjector := NewGCloudInjector(value)
 			if !gcloudInjector.Available() {
@@ -169,8 +166,6 @@ func injectorDescription(entry CredentialEntry) string {
 		return "Bearer token"
 	case "api_key":
 		return entry.Params["header_name"]
-	case "github_token":
-		return "token"
 	case "gcloud":
 		return "gcloud ADC Bearer token"
 	default:

@@ -10,7 +10,7 @@ func TestStore_InjectCredentials_ExactDomain(t *testing.T) {
 	store := NewStore()
 	store.AddRoute(Route{
 		ExactDomain: "github.com",
-		Injector:    &GitHubTokenInjector{Token: "ghp_test123"},
+		Injector:    &BearerInjector{Token: "ghp_test123"},
 	})
 
 	req := &http.Request{
@@ -21,8 +21,8 @@ func TestStore_InjectCredentials_ExactDomain(t *testing.T) {
 	if !store.InjectCredentials(req) {
 		t.Error("should match github.com")
 	}
-	if got := req.Header.Get("Authorization"); got != "token ghp_test123" {
-		t.Errorf("Authorization = %q, want %q", got, "token ghp_test123")
+	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test123" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer ghp_test123")
 	}
 }
 
@@ -50,7 +50,7 @@ func TestStore_InjectCredentials_NoMatch(t *testing.T) {
 	store := NewStore()
 	store.AddRoute(Route{
 		ExactDomain: "github.com",
-		Injector:    &GitHubTokenInjector{Token: "ghp_test"},
+		Injector:    &BearerInjector{Token: "ghp_test"},
 	})
 
 	req := &http.Request{
