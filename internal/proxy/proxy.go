@@ -323,8 +323,9 @@ func New(cfg Config) *http.Server {
 	)
 
 	return &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: proxy,
+		Addr:              cfg.ListenAddr,
+		Handler:           proxy,
+		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},

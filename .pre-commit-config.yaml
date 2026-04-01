@@ -13,3 +13,8 @@ repos:
         language: system
         types: [go]
         pass_filenames: false
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.62.2
+    hooks:
+      - id: golangci-lint
