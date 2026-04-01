@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files need formatting:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  unit-tests:
+    name: Unit Tests (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-22.04
+    needs: lint
+    strategy:
+      matrix:
+        go-version: ["1.22", "1.23"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Run unit tests
+        run: go test -short -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        if: matrix.go-version == '1.23'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-22.04
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Run integration tests
+        run: go test -run TestIntegration ./...
+
+  build:
+    name: Build (${{ matrix.goarch }})
+    runs-on: ubuntu-22.04
+    needs: lint
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -ldflags="-s -w" -o bin/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/paude-proxy/
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  container-build:
+    name: Container Build
+    runs-on: ubuntu-22.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: podman build -t paude-proxy:test .

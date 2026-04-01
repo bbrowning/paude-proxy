@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Run all tests
+        run: go test -race ./...
+
+  build-binaries:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-22.04
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w" -o dist/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/paude-proxy/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  publish-containers:
+    name: Publish Container Images
+    runs-on: ubuntu-22.04
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-arch builds
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Quay.io
+        run: podman login -u "${{ secrets.QUAY_USERNAME }}" -p "${{ secrets.QUAY_PASSWORD }}" quay.io
+
+      - name: Check if pre-release
+        id: prerelease
+        run: |
+          if echo "${GITHUB_REF_NAME}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push multi-arch image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IS_PRERELEASE: ${{ steps.prerelease.outputs.is_prerelease }}
+        run: |
+          IMAGE=quay.io/bbrowning/paude-proxy
+          FULL="${IMAGE}:${VERSION}"
+
+          podman manifest create "${FULL}"
+          podman build --platform linux/amd64,linux/arm64 --manifest "${FULL}" .
+          podman manifest push --all "${FULL}" "docker://${FULL}"
+
+          # Only update latest for stable releases
+          if [ "${IS_PRERELEASE}" = "false" ]; then
+            podman manifest push --all "${FULL}" "docker://${IMAGE}:latest"
+          else
+            echo "Skipping latest tag for pre-release ${VERSION}"
+          fi
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build-binaries, publish-containers]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Check if pre-release
+        id: prerelease
+        run: |
+          if echo "${GITHUB_REF_NAME}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate release notes
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | sed -n '2p')
+          if [ -n "${PREV_TAG}" ]; then
+            git log --pretty=format:"- %s" "${PREV_TAG}..${GITHUB_REF_NAME}" \
+              | grep -v "^- Release v" > /tmp/release-notes.txt || true
+          else
+            git log --pretty=format:"- %s" "${GITHUB_REF_NAME}" \
+              | grep -v "^- Release v" > /tmp/release-notes.txt || true
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ steps.prerelease.outputs.is_prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-notes.txt \
+            ${PRERELEASE_FLAG}

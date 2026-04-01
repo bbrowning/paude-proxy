@@ -17,6 +17,13 @@ import (
 	"github.com/bbrowning/paude-proxy/internal/filter"
 )
 
+func skipIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+}
+
 // startTestProxy creates a proxy with the given config and returns its URL and a cleanup func.
 func startTestProxy(t *testing.T, ca *CA, domainFilter *filter.DomainFilter, credStore *credentials.Store, tokenVendor *credentials.TokenVendor, upstreamCAs *x509.CertPool) (proxyURL string, cleanup func()) {
 	return startTestProxyWithConfig(t, Config{
@@ -91,6 +98,7 @@ func httpClientViaProxy(t *testing.T, proxyAddr string, caCert *x509.Certificate
 }
 
 func TestIntegration_MITMProxy(t *testing.T) {
+	skipIntegration(t)
 	// Generate proxy CA
 	ca, err := GenerateCA()
 	if err != nil {
@@ -178,6 +186,7 @@ func TestIntegration_MITMProxy(t *testing.T) {
 }
 
 func TestIntegration_DomainBlocking(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -216,6 +225,7 @@ func TestIntegration_DomainBlocking(t *testing.T) {
 }
 
 func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -270,6 +280,7 @@ func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
 }
 
 func TestIntegration_PortFiltering(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -341,6 +352,7 @@ func TestIntegration_PortFiltering(t *testing.T) {
 }
 
 func TestIntegration_HeaderSuppression(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -393,6 +405,7 @@ func TestIntegration_HeaderSuppression(t *testing.T) {
 }
 
 func TestIntegration_TokenVending(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -452,6 +465,7 @@ func TestIntegration_TokenVending(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -496,6 +510,7 @@ func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -535,6 +550,7 @@ func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_CIDR(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -579,6 +595,7 @@ func TestIntegration_ClientFilter_CIDR(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_Disabled(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -617,6 +634,7 @@ func TestIntegration_ClientFilter_Disabled(t *testing.T) {
 }
 
 func TestIntegration_UntrustedUpstreamCert(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
