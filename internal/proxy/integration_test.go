@@ -118,7 +118,7 @@ func TestIntegration_MITMProxy(t *testing.T) {
 
 	// Extract the upstream server's hostname and host:port
 	upstreamURL, _ := url.Parse(upstream.URL)
-	upstreamHostPort := upstreamURL.Host // e.g., "127.0.0.1:44637"
+	upstreamHostPort := upstreamURL.Host       // e.g., "127.0.0.1:44637"
 	upstreamHostname := upstreamURL.Hostname() // e.g., "127.0.0.1"
 
 	// Domain filter works on hostname without port

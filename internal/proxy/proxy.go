@@ -184,7 +184,7 @@ type Config struct {
 	PortFilter    *PortFilter
 	BlockedLogger *BlockedLogger
 	Verbose       bool
-	ClientFilter  *ClientFilter // If non-nil, only listed IPs/CIDRs can connect
+	ClientFilter  *ClientFilter  // If non-nil, only listed IPs/CIDRs can connect
 	UpstreamCAs   *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
 }
 

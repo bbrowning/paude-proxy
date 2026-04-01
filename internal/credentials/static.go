@@ -38,4 +38,3 @@ type APIKeyInjector struct {
 func (a *APIKeyInjector) Inject(req *http.Request) {
 	req.Header.Set(a.HeaderName, a.Key)
 }
-
