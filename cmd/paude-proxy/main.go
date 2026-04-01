@@ -23,18 +23,27 @@ func main() {
 	caDir := envOr("PAUDE_PROXY_CA_DIR", "/data/ca")
 	allowedDomains := os.Getenv("ALLOWED_DOMAINS")
 	verbose := os.Getenv("PAUDE_PROXY_VERBOSE") == "1"
+	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/squid-blocked.log")
+	otelPortsStr := os.Getenv("ALLOWED_OTEL_PORTS")
 
-	// Generate CA
-	log.Println("Generating CA certificate...")
-	ca, err := proxy.GenerateCA()
+	// Load existing CA or generate a new one
+	ca, err := proxy.LoadCAFromDir(caDir)
 	if err != nil {
-		log.Fatalf("Failed to generate CA: %v", err)
+		log.Fatalf("Failed to load existing CA from %s: %v", caDir, err)
 	}
-
-	if err := ca.WriteToDir(caDir); err != nil {
-		log.Fatalf("Failed to write CA to %s: %v", caDir, err)
+	if ca != nil {
+		log.Printf("Reusing existing CA from %s/ca.crt", caDir)
+	} else {
+		log.Println("Generating new CA certificate...")
+		ca, err = proxy.GenerateCA()
+		if err != nil {
+			log.Fatalf("Failed to generate CA: %v", err)
+		}
+		if err := ca.WriteToDir(caDir); err != nil {
+			log.Fatalf("Failed to write CA to %s: %v", caDir, err)
+		}
+		log.Printf("CA certificate written to %s/ca.crt", caDir)
 	}
-	log.Printf("CA certificate written to %s/ca.crt", caDir)
 
 	// Domain filter
 	domainFilter := filter.NewDomainFilter(allowedDomains)
@@ -44,17 +53,38 @@ func main() {
 		log.Printf("Domain filtering: ENABLED (%s)", allowedDomains)
 	}
 
+	// Port filter
+	portFilter := proxy.DefaultPortFilter()
+	if otelPortsStr != "" {
+		otelPorts, err := proxy.ParseOTELPorts(otelPortsStr)
+		if err != nil {
+			log.Fatalf("Invalid ALLOWED_OTEL_PORTS: %v", err)
+		}
+		portFilter.AddPorts(otelPorts)
+		log.Printf("Port filtering: additional OTEL ports %v", otelPorts)
+	}
+
+	// Blocked domain logger
+	blockedLogger, err := proxy.NewBlockedLogger(blockedLogPath)
+	if err != nil {
+		log.Fatalf("Failed to open blocked log %s: %v", blockedLogPath, err)
+	}
+	defer blockedLogger.Close()
+	log.Printf("Blocked request log: %s", blockedLogPath)
+
 	// Credential store and token vendor
 	credStore, tokenVendor := buildCredentialStore(domainFilter)
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
-		ListenAddr:   listenAddr,
-		CA:           ca,
-		DomainFilter: domainFilter,
-		CredStore:    credStore,
-		TokenVendor:  tokenVendor,
-		Verbose:      verbose,
+		ListenAddr:    listenAddr,
+		CA:            ca,
+		DomainFilter:  domainFilter,
+		CredStore:     credStore,
+		TokenVendor:   tokenVendor,
+		PortFilter:    portFilter,
+		BlockedLogger: blockedLogger,
+		Verbose:       verbose,
 	})
 
 	// Graceful shutdown

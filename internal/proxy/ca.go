@@ -72,6 +72,62 @@ func GenerateCA() (*CA, error) {
 	}, nil
 }
 
+// LoadCAFromDir loads an existing CA certificate and key from the given directory.
+// Returns nil, nil if the files do not exist. Returns an error if the files
+// exist but cannot be parsed.
+func LoadCAFromDir(dir string) (*CA, error) {
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read CA cert: %w", err)
+	}
+
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read CA key: %w", err)
+	}
+
+	// Parse certificate
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, fmt.Errorf("no PEM block found in %s", certPath)
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA certificate: %w", err)
+	}
+
+	// Parse private key
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("no PEM block found in %s", keyPath)
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA key: %w", err)
+	}
+
+	tlsCert := tls.Certificate{
+		Certificate: [][]byte{cert.Raw},
+		PrivateKey:  key,
+		Leaf:        cert,
+	}
+
+	return &CA{
+		Certificate: cert,
+		PrivateKey:  key,
+		TLSCert:     tlsCert,
+	}, nil
+}
+
 // WriteToDir writes the CA certificate and key to the given directory.
 // The certificate is written as ca.crt and the key as ca.key.
 func (ca *CA) WriteToDir(dir string) error {
