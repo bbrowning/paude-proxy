@@ -18,12 +18,13 @@ import (
 )
 
 // startTestProxy creates a proxy with the given config and returns its URL and a cleanup func.
-func startTestProxy(t *testing.T, ca *CA, domainFilter *filter.DomainFilter, credStore *credentials.Store, tokenVendor *credentials.TokenVendor) (proxyURL string, cleanup func()) {
+func startTestProxy(t *testing.T, ca *CA, domainFilter *filter.DomainFilter, credStore *credentials.Store, tokenVendor *credentials.TokenVendor, upstreamCAs *x509.CertPool) (proxyURL string, cleanup func()) {
 	return startTestProxyWithConfig(t, Config{
 		CA:           ca,
 		DomainFilter: domainFilter,
 		CredStore:    credStore,
 		TokenVendor:  tokenVendor,
+		UpstreamCAs:  upstreamCAs,
 		Verbose:      false,
 	})
 }
@@ -43,6 +44,19 @@ func startTestProxyWithConfig(t *testing.T, cfg Config) (proxyURL string, cleanu
 	return "http://" + listener.Addr().String(), func() {
 		srv.Close()
 	}
+}
+
+// upstreamCertPool extracts the CA cert from an httptest.NewTLSServer and returns it as a CertPool.
+func upstreamCertPool(t *testing.T, srv *httptest.Server) *x509.CertPool {
+	t.Helper()
+	cert := srv.TLS.Certificates[0]
+	ca, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse upstream cert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	return pool
 }
 
 // httpClientViaProxy creates an http.Client that uses the given proxy and trusts both
@@ -110,12 +124,13 @@ func TestIntegration_MITMProxy(t *testing.T) {
 	})
 	_ = upstreamHostPort
 
-	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil)
-	defer cleanup()
-
-	// Get upstream server's CA cert for trust
+	// Get upstream server's CA cert for trust (needed by both proxy and client)
+	upstreamCAs := upstreamCertPool(t, upstream)
 	upstreamCert := upstream.TLS.Certificates[0]
 	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+	defer cleanup()
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 
@@ -171,7 +186,7 @@ func TestIntegration_DomainBlocking(t *testing.T) {
 	// Allow only 127.0.0.1 — nothing else
 	df := filter.NewDomainFilter("127.0.0.1")
 
-	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, nil)
+	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, nil, nil)
 	defer cleanup()
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
@@ -228,11 +243,12 @@ func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
 		Injector:    &credentials.BearerInjector{Token: "should-not-appear"},
 	})
 
-	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil)
-	defer cleanup()
-
+	upstreamCAs := upstreamCertPool(t, upstream)
 	upstreamCert := upstream.TLS.Certificates[0]
 	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+	defer cleanup()
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 
@@ -299,6 +315,7 @@ func TestIntegration_PortFiltering(t *testing.T) {
 	}
 	pf.AddPorts([]int{portNum})
 
+	upstreamCAs := upstreamCertPool(t, upstream)
 	upstreamCert := upstream.TLS.Certificates[0]
 	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
@@ -306,6 +323,7 @@ func TestIntegration_PortFiltering(t *testing.T) {
 		CA:           ca,
 		DomainFilter: df,
 		PortFilter:   pf,
+		UpstreamCAs:  upstreamCAs,
 		Verbose:      false,
 	})
 	defer cleanup2()
@@ -345,11 +363,12 @@ func TestIntegration_HeaderSuppression(t *testing.T) {
 	df := filter.NewDomainFilter(upstreamHostname)
 
 	// No port filter so the non-443 upstream port is allowed
-	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, nil)
-	defer cleanup()
-
+	upstreamCAs := upstreamCertPool(t, upstream)
 	upstreamCert := upstream.TLS.Certificates[0]
 	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, nil, upstreamCAs)
+	defer cleanup()
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 
@@ -394,10 +413,11 @@ func TestIntegration_TokenVending(t *testing.T) {
 	// Create a token vendor (without real ADC — it returns dummy tokens)
 	tokenVendor := credentials.NewTokenVendor()
 
-	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, tokenVendor)
-	defer cleanup()
-
+	upstreamCAs := upstreamCertPool(t, upstream)
 	upstreamCert := upstream.TLS.Certificates[0]
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, tokenVendor, upstreamCAs)
+	defer cleanup()
 	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
@@ -452,15 +472,17 @@ func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
 		t.Fatalf("NewClientFilter: %v", err)
 	}
 
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
 	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
 		CA:           ca,
 		DomainFilter: df,
 		ClientFilter: cf,
+		UpstreamCAs:  upstreamCAs,
 	})
 	defer cleanup()
-
-	upstreamCert := upstream.TLS.Certificates[0]
-	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 	resp, err := client.Get(upstream.URL + "/test")
@@ -493,15 +515,17 @@ func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
 		t.Fatalf("NewClientFilter: %v", err)
 	}
 
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
 	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
 		CA:           ca,
 		DomainFilter: df,
 		ClientFilter: cf,
+		UpstreamCAs:  upstreamCAs,
 	})
 	defer cleanup()
-
-	upstreamCert := upstream.TLS.Certificates[0]
-	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 	_, err = client.Get(upstream.URL + "/test")
@@ -531,15 +555,17 @@ func TestIntegration_ClientFilter_CIDR(t *testing.T) {
 		t.Fatalf("NewClientFilter: %v", err)
 	}
 
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
 	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
 		CA:           ca,
 		DomainFilter: df,
 		ClientFilter: cf,
+		UpstreamCAs:  upstreamCAs,
 	})
 	defer cleanup()
-
-	upstreamCert := upstream.TLS.Certificates[0]
-	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 	resp, err := client.Get(upstream.URL + "/test")
@@ -568,14 +594,16 @@ func TestIntegration_ClientFilter_Disabled(t *testing.T) {
 	df := filter.NewDomainFilter(upstreamURL.Hostname())
 
 	// No client filter — all clients allowed
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
 	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
 		CA:           ca,
 		DomainFilter: df,
+		UpstreamCAs:  upstreamCAs,
 	})
 	defer cleanup()
-
-	upstreamCert := upstream.TLS.Certificates[0]
-	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
 
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
 	resp, err := client.Get(upstream.URL + "/test")
@@ -586,4 +614,46 @@ func TestIntegration_ClientFilter_Disabled(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
+}
+
+func TestIntegration_UntrustedUpstreamCert(t *testing.T) {
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	// Start an upstream HTTPS server (self-signed cert)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+
+	// DO NOT pass UpstreamCAs — the proxy should not trust the upstream's self-signed cert
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:           ca,
+		DomainFilter: df,
+	})
+	defer cleanup()
+
+	// Client trusts both the proxy CA and the upstream CA (so the client side is fine),
+	// but the PROXY doesn't trust the upstream — the proxy should fail the upstream TLS handshake
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+
+	resp, err := client.Get(upstream.URL + "/test")
+	if err == nil {
+		resp.Body.Close()
+		// If we got a response, it should be an error (502 Bad Gateway from proxy failing upstream TLS)
+		if resp.StatusCode == http.StatusOK {
+			t.Fatal("proxy should reject upstream with untrusted cert, but request succeeded with 200")
+		}
+		t.Logf("got status %d (expected — proxy rejected untrusted upstream cert)", resp.StatusCode)
+		return
+	}
+	// Connection error is also acceptable — proxy rejected the upstream
+	t.Logf("got error (expected — proxy rejected untrusted upstream cert): %v", err)
 }

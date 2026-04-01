@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net"
@@ -184,11 +185,23 @@ type Config struct {
 	BlockedLogger *BlockedLogger
 	Verbose       bool
 	ClientFilter  *ClientFilter // If non-nil, only listed IPs/CIDRs can connect
+	UpstreamCAs   *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
 }
 
 // New creates a configured goproxy server.
 func New(cfg Config) *http.Server {
 	proxy := goproxy.NewProxyHttpServer()
+	// Override goproxy's default transport which uses InsecureSkipVerify: true.
+	// We MUST verify upstream server TLS certificates to prevent credential theft via MITM.
+	proxyTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+	if cfg.UpstreamCAs != nil {
+		proxyTransport.TLSClientConfig.RootCAs = cfg.UpstreamCAs
+	}
+	proxy.Tr = proxyTransport
 	proxy.Verbose = cfg.Verbose
 
 	// Set up the CA for MITM
