@@ -74,23 +74,26 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `PAUDE_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
 | `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
 | `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
+| `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing JSON config | (embedded default) |
 | `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
 | `CURSOR_API_KEY` | -> `Authorization: Bearer` for `*.cursor.com`, `*.cursorapi.com` | |
-| `GH_TOKEN` | -> `Authorization: token` for `github.com`, `*.githubusercontent.com` | |
+| `GH_TOKEN` | -> `Authorization: Bearer` for `github.com`, `*.githubusercontent.com` | |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to gcloud ADC JSON | |
 
 ## Credential Routing Table
+
+The default credential routing is defined in `internal/credentials/credentials.json` and embedded into the binary. It can be overridden at runtime by setting `PAUDE_PROXY_CREDENTIALS_CONFIG` to point to a custom JSON config file. See the README for the config file format.
 
 | Domain Pattern | Header Injected | Source |
 |---|---|---|
 | `*.anthropic.com` | `x-api-key: <key>` | `ANTHROPIC_API_KEY` |
 | `*.openai.com` | `Authorization: Bearer <key>` | `OPENAI_API_KEY` |
 | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` | `CURSOR_API_KEY` |
-| `github.com`, `api.github.com` | `Authorization: token <pat>` | `GH_TOKEN` |
-| `*.githubusercontent.com` | `Authorization: token <pat>` | `GH_TOKEN` |
+| `github.com`, `api.github.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
+| `*.githubusercontent.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
 | `*.googleapis.com` | `Authorization: Bearer <token>` | gcloud ADC (auto-refresh) |
 
 ## Client Compatibility
@@ -135,12 +138,14 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 |---|---|
 | `ANTHROPIC_API_KEY=paude-proxy-managed` | Real `x-api-key: sk-ant-...` |
 | `OPENAI_API_KEY=paude-proxy-managed` | Real `Authorization: Bearer sk-...` |
-| `GH_TOKEN=paude-proxy-managed` | Real `Authorization: token ghp_...` |
+| `GH_TOKEN=paude-proxy-managed` | Real `Authorization: Bearer ghp_...` |
 | Stub ADC with dummy refresh_token | Dummy token from vendor, real token injected at API call time |
 
 ## Project Layout
 
-- `cmd/paude-proxy/main.go` — entry point, config loading, credential store + token vendor assembly, startup validation
+- `cmd/paude-proxy/main.go` — entry point, config loading, startup validation
+- `internal/credentials/credentials.json` — default credential routing config (embedded into binary via `//go:embed`)
+- `internal/credentials/config.go` — config file parsing, validation, and credential store builder
 - `internal/proxy/proxy.go` — core MITM proxy: CONNECT handling, domain filter, port filter, token vending intercept, credential injection, blocked logging, header suppression
 - `internal/proxy/ca.go` — ECDSA P-256 CA cert/key generation
 - `internal/proxy/ca_test.go` — tests for CA generation and file writing
@@ -148,7 +153,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 - `internal/filter/domains_test.go` — tests for all domain matching patterns
 - `internal/credentials/store.go` — credential route store, domain-to-injector matching, injection logging
 - `internal/credentials/store_test.go` — tests for routing, override behavior, first-match-wins
-- `internal/credentials/static.go` — always-override injectors: Bearer, API key, GitHub token
+- `internal/credentials/static.go` — always-override injectors: Bearer, API key, generic header
 - `internal/credentials/gcloud.go` — gcloud ADC OAuth2 token refresh via `golang.org/x/oauth2/google`
 - `internal/credentials/token_vending.go` — intercepts `POST oauth2.googleapis.com/token`, returns dummy tokens
 - `Dockerfile` — multi-stage build (Go builder + CentOS Stream 10 runtime with dnsmasq + tini)

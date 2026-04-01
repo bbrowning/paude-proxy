@@ -69,7 +69,7 @@ PAUDE_PROXY_CA_DIR=/tmp/proxy-ca \
 ./bin/paude-proxy
 ```
 
-Requests to `*.anthropic.com` get `x-api-key: sk-ant-real-key`. Requests to `*.openai.com` get `Authorization: Bearer sk-real-key`. Requests to `github.com` get `Authorization: token ghp_real-token`. Requests to any other domain are blocked by the domain filter.
+Requests to `*.anthropic.com` get `x-api-key: sk-ant-real-key`. Requests to `*.openai.com` get `Authorization: Bearer sk-real-key`. Requests to `github.com` get `Authorization: Bearer ghp_real-token`. Requests to any other domain are blocked by the domain filter.
 
 ### Routing any application through the proxy
 
@@ -172,7 +172,7 @@ This prevents other containers or processes on the network from using the proxy 
 | `ANTHROPIC_API_KEY` | `*.anthropic.com` | `x-api-key: <key>` |
 | `OPENAI_API_KEY` | `*.openai.com` | `Authorization: Bearer <key>` |
 | `CURSOR_API_KEY` | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` |
-| `GH_TOKEN` | `github.com`, `api.github.com`, `*.githubusercontent.com` | `Authorization: token <pat>` |
+| `GH_TOKEN` | `github.com`, `api.github.com`, `*.githubusercontent.com` | `Authorization: Bearer <pat>` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `*.googleapis.com` | `Authorization: Bearer <token>` (auto-refreshed OAuth2) |
 
 Only set the env vars for the providers you need. If an env var is unset, the proxy passes requests to that domain through without credential injection.
@@ -190,6 +190,7 @@ All configuration is via environment variables:
 | `ALLOWED_DOMAINS` | Comma-separated domain allowlist (empty = allow all) | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
+| `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing config (JSON) | (embedded default) |
 
 ### Domain Allowlist Format
 
@@ -200,6 +201,58 @@ All configuration is via environment variables:
 - **Regex**: `~pattern` — matches hostnames against the regex
 
 Example: `github.com,.openai.com,~aiplatform\.googleapis\.com$`
+
+### Custom Credential Routing
+
+The default credential routing table (shown above) is embedded in the binary. To customize which credentials are injected for which domains, provide a JSON config file via `PAUDE_PROXY_CREDENTIALS_CONFIG`:
+
+```bash
+PAUDE_PROXY_CREDENTIALS_CONFIG=/path/to/credentials.json ./bin/paude-proxy
+```
+
+The config file maps environment variables to injector types and domain patterns:
+
+```json
+{
+  "credentials": [
+    {
+      "env_var": "ANTHROPIC_API_KEY",
+      "injector": "api_key",
+      "params": { "header_name": "x-api-key" },
+      "domains": [".anthropic.com"]
+    },
+    {
+      "env_var": "OPENAI_API_KEY",
+      "injector": "bearer",
+      "domains": [".openai.com"]
+    },
+    {
+      "env_var": "GH_TOKEN",
+      "injector": "bearer",
+      "domains": ["github.com", "api.github.com", ".githubusercontent.com"]
+    },
+    {
+      "env_var": "GOOGLE_APPLICATION_CREDENTIALS",
+      "injector": "gcloud",
+      "domains": [".googleapis.com"]
+    }
+  ]
+}
+```
+
+**Available injector types:**
+
+| Type | Description | Required `params` |
+|---|---|---|
+| `bearer` | Sets `Authorization: Bearer <value>` | — |
+| `api_key` | Sets a custom header with the credential value | `header_name` |
+| `gcloud` | OAuth2 Bearer token from ADC (auto-refreshed); also enables token vending | — |
+
+**Domain patterns:** Prefix with `.` for wildcard suffix matching (`.openai.com` matches `api.openai.com`). Without a prefix, matches exactly (`github.com` matches only `github.com`).
+
+Credential values always come from environment variables — never put secrets in the config file. If an env var is unset, its entry is silently skipped.
+
+The default config is at [`internal/credentials/credentials.json`](internal/credentials/credentials.json).
 
 ### gcloud ADC (Vertex AI / Gemini)
 
@@ -227,7 +280,7 @@ Requires Go 1.23+. After cloning, run `go mod tidy` to resolve dependencies.
 The proxy is designed for scenarios where the client is **untrusted** (e.g., an AI agent that could be prompt-injected into attempting credential exfiltration). It protects against:
 
 - **Credential theft from filesystem/env** — real credentials only exist in the proxy process, never in the client's environment
-- **Credentials sent to wrong domains** — hardcoded routing table with strict suffix matching (`evil-openai.com` does NOT match `.openai.com`)
+- **Credentials sent to wrong domains** — routing table with strict suffix matching (`evil-openai.com` does NOT match `.openai.com`)
 - **Host header forgery** — credential routing uses the CONNECT target (from the TCP connection), not the Host header
 - **Redirect-based credential leakage** — proxy never follows redirects; 3xx responses pass through to the client
 - **Unauthorized proxy access** — source IP filtering + network isolation

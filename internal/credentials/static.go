@@ -39,12 +39,3 @@ func (a *APIKeyInjector) Inject(req *http.Request) {
 	req.Header.Set(a.HeaderName, a.Key)
 }
 
-// GitHubTokenInjector injects Authorization: token <pat> for GitHub.
-// Always overrides — the agent may have a dummy placeholder token.
-type GitHubTokenInjector struct {
-	Token string
-}
-
-func (g *GitHubTokenInjector) Inject(req *http.Request) {
-	req.Header.Set("Authorization", "token "+g.Token)
-}

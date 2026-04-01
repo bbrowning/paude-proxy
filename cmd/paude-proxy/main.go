@@ -123,106 +123,28 @@ func main() {
 	log.Println("Stopped")
 }
 
-// credentialDomains maps credential env vars to the domains they'll be injected for.
-// Used for startup validation: warn if credentials are configured but domains aren't allowed.
-var credentialDomains = map[string][]string{
-	"ANTHROPIC_API_KEY":              {".anthropic.com"},
-	"OPENAI_API_KEY":                 {".openai.com"},
-	"CURSOR_API_KEY":                 {".cursor.com", ".cursorapi.com"},
-	"GH_TOKEN":                       {"github.com", "api.github.com", ".githubusercontent.com"},
-	"GOOGLE_APPLICATION_CREDENTIALS": {".googleapis.com"},
-}
-
 func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store, *credentials.TokenVendor) {
-	store := credentials.NewStore()
-	var tokenVendor *credentials.TokenVendor
-	hasCredentials := false
+	var cfg *credentials.CredentialConfig
+	var err error
 
-	// Anthropic: x-api-key header
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		store.AddRoute(credentials.Route{
-			DomainSuffix: ".anthropic.com",
-			Injector:     &credentials.APIKeyInjector{HeaderName: "x-api-key", Key: key},
-		})
-		log.Println("Credential route: *.anthropic.com -> x-api-key")
-		hasCredentials = true
+	configPath := os.Getenv("PAUDE_PROXY_CREDENTIALS_CONFIG")
+	if configPath != "" {
+		log.Printf("Loading credential config from %s", configPath)
+		cfg, err = credentials.LoadConfig(configPath)
+	} else {
+		log.Println("Using default credential config")
+		cfg, err = credentials.LoadDefaultConfig()
+	}
+	if err != nil {
+		log.Fatalf("Failed to load credential config: %v", err)
 	}
 
-	// OpenAI: Authorization: Bearer
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		store.AddRoute(credentials.Route{
-			DomainSuffix: ".openai.com",
-			Injector:     &credentials.BearerInjector{Token: key},
-		})
-		log.Println("Credential route: *.openai.com -> Bearer token")
-		hasCredentials = true
-	}
-
-	// Cursor: Authorization: Bearer
-	if key := os.Getenv("CURSOR_API_KEY"); key != "" {
-		for _, suffix := range []string{".cursor.com", ".cursorapi.com"} {
-			store.AddRoute(credentials.Route{
-				DomainSuffix: suffix,
-				Injector:     &credentials.BearerInjector{Token: key},
-			})
-		}
-		log.Println("Credential route: *.cursor.com, *.cursorapi.com -> Bearer token")
-		hasCredentials = true
-	}
-
-	// GitHub: Authorization: token
-	if token := os.Getenv("GH_TOKEN"); token != "" {
-		for _, domain := range []string{"github.com", "api.github.com"} {
-			store.AddRoute(credentials.Route{
-				ExactDomain: domain,
-				Injector:    &credentials.GitHubTokenInjector{Token: token},
-			})
-		}
-		store.AddRoute(credentials.Route{
-			DomainSuffix: ".githubusercontent.com",
-			Injector:     &credentials.GitHubTokenInjector{Token: token},
-		})
-		log.Println("Credential route: github.com, *.githubusercontent.com -> token")
-		hasCredentials = true
-	}
-
-	// Google Cloud / Vertex AI: OAuth2 Bearer from ADC
-	// Two mechanisms work together:
-	// 1. Token vending: intercept agent's OAuth2 token exchange (POST
-	//    oauth2.googleapis.com/token) and return a DUMMY token. The
-	//    agent never sees any real credential.
-	// 2. Header injection: override the dummy Authorization header on
-	//    API requests to *.googleapis.com with a real Bearer token
-	//    obtained from the proxy's own ADC.
-	adcPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	if adcPath != "" {
-		gcloudInjector := credentials.NewGCloudInjector(adcPath)
-		if gcloudInjector.Available() {
-			store.AddRoute(credentials.Route{
-				DomainSuffix: ".googleapis.com",
-				Injector:     gcloudInjector,
-			})
-			tokenVendor = credentials.NewTokenVendor()
-			log.Println("Credential route: *.googleapis.com -> gcloud ADC Bearer token")
-			log.Println("Token vendor: ENABLED (returns dummy tokens for oauth2.googleapis.com/token)")
-			hasCredentials = true
-		} else {
-			log.Printf("WARN: GOOGLE_APPLICATION_CREDENTIALS=%s but ADC not loadable", adcPath)
-		}
-	}
-
-	if !hasCredentials {
-		log.Println("No credential routes configured")
-	}
+	store, tokenVendor, domainMap := credentials.BuildFromConfig(cfg)
 
 	// Validate: warn if credentials are configured but their domains aren't allowed
 	if !domainFilter.AllowAll() {
-		for envVar, domains := range credentialDomains {
-			if os.Getenv(envVar) == "" {
-				continue
-			}
+		for envVar, domains := range domainMap {
 			for _, domain := range domains {
-				// Test with a representative hostname
 				testHost := domain
 				if domain[0] == '.' {
 					testHost = "test" + domain
