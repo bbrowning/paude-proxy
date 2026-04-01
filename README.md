@@ -253,4 +253,4 @@ See [`docs/PAUDE_INTEGRATION.md`](docs/PAUDE_INTEGRATION.md) for integration det
 
 ## License
 
-Apache-2.0
+MIT — see [LICENSE](LICENSE)
