@@ -74,6 +74,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `PAUDE_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
 | `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
 | `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
+| `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing JSON config | (embedded default) |
 | `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
@@ -83,6 +84,8 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to gcloud ADC JSON | |
 
 ## Credential Routing Table
+
+The default credential routing is defined in `internal/credentials/credentials.json` and embedded into the binary. It can be overridden at runtime by setting `PAUDE_PROXY_CREDENTIALS_CONFIG` to point to a custom JSON config file. See the README for the config file format.
 
 | Domain Pattern | Header Injected | Source |
 |---|---|---|
@@ -140,7 +143,9 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 
 ## Project Layout
 
-- `cmd/paude-proxy/main.go` — entry point, config loading, credential store + token vendor assembly, startup validation
+- `cmd/paude-proxy/main.go` — entry point, config loading, startup validation
+- `internal/credentials/credentials.json` — default credential routing config (embedded into binary via `//go:embed`)
+- `internal/credentials/config.go` — config file parsing, validation, and credential store builder
 - `internal/proxy/proxy.go` — core MITM proxy: CONNECT handling, domain filter, port filter, token vending intercept, credential injection, blocked logging, header suppression
 - `internal/proxy/ca.go` — ECDSA P-256 CA cert/key generation
 - `internal/proxy/ca_test.go` — tests for CA generation and file writing
