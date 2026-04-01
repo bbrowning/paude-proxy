@@ -23,7 +23,7 @@ func main() {
 	caDir := envOr("PAUDE_PROXY_CA_DIR", "/data/ca")
 	allowedDomains := os.Getenv("ALLOWED_DOMAINS")
 	verbose := os.Getenv("PAUDE_PROXY_VERBOSE") == "1"
-	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/squid-blocked.log")
+	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/paude-proxy-blocked.log")
 	otelPortsStr := os.Getenv("ALLOWED_OTEL_PORTS")
 
 	// Client IP filtering (optional, for defense-in-depth)
