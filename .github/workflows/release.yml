@@ -12,25 +12,25 @@ jobs:
     name: Lint
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.23"
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.62
+          version: v2.11
 
   test:
     name: Test
     runs-on: ubuntu-22.04
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.23"
 
@@ -53,9 +53,9 @@ jobs:
           - goos: darwin
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.23"
 
@@ -69,7 +69,7 @@ jobs:
           go build -ldflags="-s -w" -o dist/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/paude-proxy/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/paude-proxy-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up QEMU for multi-arch builds
         run: sudo apt-get update && sudo apt-get install -y qemu-user-static
@@ -124,12 +124,12 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [build-binaries, publish-containers]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

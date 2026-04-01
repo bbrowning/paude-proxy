@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
   go: "1.23"
@@ -8,18 +10,30 @@ linters:
     - govet
     - staticcheck
     - unused
-    - gosimple
     - ineffassign
-    - typecheck
-    - gofmt
-    - goimports
     - misspell
     - gosec
     - unconvert
+  settings:
+    gosec:
+      excludes:
+        - G101  # False positive: dummy/placeholder credentials are intentional
+        - G104  # Unhandled errors in deferred Close() calls
+        - G117  # False positive: dummy token fields are intentional
+        - G301  # Directory permissions 0755 is appropriate for CA dir
+        - G302  # File permissions 0644 is appropriate for log files
+        - G703  # False positive: file paths from config, not user input
+        - G706  # False positive: logging config values, not user input
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
 
-linters-settings:
-  gofmt:
-    simplify: true
-
-issues:
-  exclude-use-default: true
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
