@@ -67,3 +67,62 @@ func TestCA_WriteToDir(t *testing.T) {
 		t.Errorf("ca.key permissions = %o, want 0600", perm)
 	}
 }
+
+func TestLoadCAFromDir_NonExistent(t *testing.T) {
+	ca, err := LoadCAFromDir(filepath.Join(t.TempDir(), "nonexistent"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ca != nil {
+		t.Error("expected nil CA for nonexistent directory")
+	}
+}
+
+func TestLoadCAFromDir_RoundTrip(t *testing.T) {
+	// Generate, write, load — the loaded CA should produce identical MITM certs
+	original, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("GenerateCA() error: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := original.WriteToDir(dir); err != nil {
+		t.Fatalf("WriteToDir() error: %v", err)
+	}
+
+	loaded, err := LoadCAFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadCAFromDir() error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadCAFromDir() returned nil")
+	}
+
+	// Verify the loaded CA matches the original
+	if loaded.Certificate.Subject.CommonName != original.Certificate.Subject.CommonName {
+		t.Errorf("CN = %q, want %q", loaded.Certificate.Subject.CommonName, original.Certificate.Subject.CommonName)
+	}
+	if !loaded.Certificate.IsCA {
+		t.Error("loaded certificate should be a CA")
+	}
+	if loaded.Certificate.SerialNumber.Cmp(original.Certificate.SerialNumber) != 0 {
+		t.Error("serial numbers don't match")
+	}
+	if !loaded.PrivateKey.Equal(original.PrivateKey) {
+		t.Error("private keys don't match")
+	}
+	if len(loaded.TLSCert.Certificate) != 1 {
+		t.Errorf("TLSCert should have 1 cert, got %d", len(loaded.TLSCert.Certificate))
+	}
+}
+
+func TestLoadCAFromDir_EmptyDir(t *testing.T) {
+	// Empty directory — no ca.crt or ca.key
+	ca, err := LoadCAFromDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ca != nil {
+		t.Error("expected nil CA for empty directory")
+	}
+}

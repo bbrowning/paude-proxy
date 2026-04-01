@@ -32,7 +32,7 @@ Agent Container              paude-proxy                   Internet
 
 - Uses `github.com/elazarl/goproxy` for MITM proxy
 - Uses `golang.org/x/oauth2/google` for gcloud ADC token refresh
-- Generates a self-signed ECDSA CA at startup, writes to `PAUDE_PROXY_CA_DIR`
+- Loads existing CA from `PAUDE_PROXY_CA_DIR` if `ca.crt` and `ca.key` are present; otherwise generates a new self-signed ECDSA CA and writes it there. Mount this directory as a volume to persist the CA across proxy restarts.
 - The CA cert must be copied to the agent container and trusted there (done by the orchestrator, not this project)
 
 ## Key Design Rules
@@ -46,6 +46,7 @@ Agent Container              paude-proxy                   Internet
 - **The proxy must never follow redirects** — pass 3xx responses back to the client. Following redirects could leak injected credentials to a redirect target on a different domain.
 - **Validate credential-domain binding at startup** — warn if a credential is configured but its domains aren't in `ALLOWED_DOMAINS`. Credentials should only be injectable for allowed domains.
 - **Log all credential injections** — every time a credential is injected, log the destination domain and credential type (never the credential value). This enables auditing.
+- **Source IP filtering for defense-in-depth** — `PAUDE_PROXY_ALLOWED_CLIENTS` (optional) restricts which IPs can connect. In imperative deployments (paude with Podman/Docker), the orchestrator passes the agent's IP. In GitOps/K8s deployments, NetworkPolicy is the primary control and this can be omitted. No secrets are given to the agent — source IPs can't be spoofed (enforced by CNI/container runtime).
 
 ## Security Model
 
@@ -57,6 +58,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 - Host header forgery (credential routing uses CONNECT target, not Host header)
 - Redirect-based credential leakage (proxy doesn't follow redirects)
 - Domain suffix confusion (`evil-openai.com` does NOT match `.openai.com`)
+- Unauthorized proxy access (source IP filtering via `PAUDE_PROXY_ALLOWED_CLIENTS` + network isolation via dedicated container network or K8s NetworkPolicy)
 
 **What the proxy does NOT protect against:**
 - Agent misusing credentials for their intended service (e.g., using a GitHub PAT to push code). Mitigate with fine-grained, least-privilege tokens.
@@ -67,10 +69,13 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 
 | Variable | Description | Default |
 |---|---|---|
+| `PAUDE_PROXY_ALLOWED_CLIENTS` | Comma-separated IPs/CIDRs allowed to connect | (empty = all) |
 | `PAUDE_PROXY_LISTEN` | Listen address | `:3128` |
 | `PAUDE_PROXY_CA_DIR` | Dir for generated CA cert/key | `/data/ca` |
 | `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
+| `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
 | `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
+| `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
 | `CURSOR_API_KEY` | -> `Authorization: Bearer` for `*.cursor.com`, `*.cursorapi.com` | |
@@ -136,7 +141,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 ## Project Layout
 
 - `cmd/paude-proxy/main.go` — entry point, config loading, credential store + token vendor assembly, startup validation
-- `internal/proxy/proxy.go` — core MITM proxy: CONNECT handling, domain filter, token vending intercept, credential injection
+- `internal/proxy/proxy.go` — core MITM proxy: CONNECT handling, domain filter, port filter, token vending intercept, credential injection, blocked logging, header suppression
 - `internal/proxy/ca.go` — ECDSA P-256 CA cert/key generation
 - `internal/proxy/ca_test.go` — tests for CA generation and file writing
 - `internal/filter/domains.go` — domain allowlist matching (exact, `.suffix`, `~regex`)
@@ -151,47 +156,16 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 
 ## Current Status
 
-All source code is scaffolded. The project has not been compiled or tested yet.
-
-**Immediate next steps (in order):**
-
-1. **`go mod tidy`** — resolve full dependency tree (go.sum doesn't exist yet)
-2. **Build** — `make build`, fix any compilation errors
-3. **Unit tests** — `make test`, fix any failures. Tests exist for:
-   - CA generation (`internal/proxy/ca_test.go`)
-   - Domain filtering (`internal/filter/domains_test.go`)
-   - Credential store routing and override behavior (`internal/credentials/store_test.go`)
-4. **Manual MITM test** — run the proxy, test with curl through it:
-   ```bash
-   # Terminal 1: start proxy
-   ALLOWED_DOMAINS=httpbin.org PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
-   # Terminal 2: test (use --proxy-cacert since system trust isn't updated)
-   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
-   ```
-5. **Credential injection test** — verify headers are injected:
-   ```bash
-   # Terminal 1: start with a test key
-   OPENAI_API_KEY=sk-test ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
-   # Terminal 2: request to httpbin to see injected headers
-   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://httpbin.org/headers
-   # (httpbin.org won't get credentials injected since it's not in the routing table — test with a mock)
-   ```
-6. **Domain filtering test** — verify blocked domains are rejected:
-   ```bash
-   curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
-   # Should fail with connection rejected
-   ```
-7. **Token vending test** — verify dummy token response for oauth2.googleapis.com/token
-8. **gcloud ADC test** — with a real ADC JSON file, verify Vertex AI API calls get real Bearer tokens
-9. **Docker build** — `make docker`, verify image builds and runs
-10. **Write additional tests** — token vending, integration tests with actual HTTPS through the proxy
-
-## Why We Chose This Over Alternatives
-
-- **Aegis** (getaegis/aegis): TypeScript, supports static API keys but NO gcloud ADC/Vertex AI support, no MITM. Doesn't meet requirements.
-- **OpenShell router** (NVIDIA/OpenShell): Rust, internal component, static API keys only, no gcloud ADC, not standalone. Doesn't meet requirements.
-- **Envoy + Go filter**: Envoy is great for reverse proxy but MITM forward proxy with dynamic cert generation is complex in Envoy (SDS, internal listeners, CONNECT handling). goproxy is purpose-built for this. Envoy also adds ~60-100MB image size vs ~15MB for our static binary. The credential injection Go code is identical either way — the difference is the proxy plumbing, where goproxy wins for MITM forward proxy.
-- **Squid with ssl-bump**: Would need ICAP/eCAP adapter for credential injection. Much more complex config for the same result.
+All source code is implemented, compiles cleanly, and all tests pass. Features:
+- MITM HTTPS interception with generated ECDSA CA
+- Credential injection (Anthropic, OpenAI, Cursor, GitHub, gcloud ADC)
+- Domain allowlist filtering (exact, wildcard suffix, regex)
+- Port filtering (Safe_ports/SSL_ports, matching squid behavior)
+- Blocked-request logging to `/tmp/squid-blocked.log` (compatible with paude's `proxy_log.py` parser)
+- Token vending for gcloud ADC (returns dummy tokens to agent, injects real ones)
+- Proxy identity header suppression (strips Via, X-Forwarded-For)
+- DNS forwarding via dnsmasq
+- OpenShift-compatible container image
 
 ## Consumer: Paude
 
@@ -220,6 +194,10 @@ curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://
 # Test domain blocking:
 curl --proxy-cacert /tmp/paude-proxy-ca/ca.crt -x http://localhost:3128 https://evil.com
 # Should fail with connection rejected
+
+# Test source IP filtering:
+PAUDE_PROXY_ALLOWED_CLIENTS=127.0.0.1 ALLOWED_DOMAINS=httpbin.org PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
+# Requests from 127.0.0.1 succeed; requests from other IPs are rejected
 
 # Test credential injection (start proxy with a key):
 OPENAI_API_KEY=sk-test123 ALLOWED_DOMAINS=httpbin.org,.openai.com PAUDE_PROXY_CA_DIR=/tmp/paude-proxy-ca make run
