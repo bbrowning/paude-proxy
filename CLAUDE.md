@@ -169,7 +169,7 @@ All source code is implemented, compiles cleanly, and all tests pass. Features:
 
 ## Consumer: Paude
 
-This proxy is consumed by the [paude](https://github.com/paude-group/paude) project. Paude will:
+This proxy is consumed by the [paude](https://github.com/bbrowning/paude) project. Paude will:
 - Run this as a separate container alongside agent containers (NOT a sidecar — separate container like the current squid proxy)
 - Copy the CA cert from this container to the agent container via `podman cp` / `oc cp`
 - Pass real credential env vars to this container (not the agent)
