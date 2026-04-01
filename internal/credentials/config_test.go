@@ -136,7 +136,7 @@ func TestLoadConfig_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
 	data := []byte(`{"credentials": [{"env_var": "TEST_KEY", "injector": "bearer", "domains": [".test.com"]}]}`)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
 

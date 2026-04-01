@@ -1,0 +1,25 @@
+run:
+  timeout: 5m
+  go: "1.23"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - gofmt
+    - goimports
+    - misspell
+    - gosec
+    - unconvert
+
+linters-settings:
+  gofmt:
+    simplify: true
+
+issues:
+  exclude-use-default: true

@@ -17,6 +17,13 @@ import (
 	"github.com/bbrowning/paude-proxy/internal/filter"
 )
 
+func skipIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+}
+
 // startTestProxy creates a proxy with the given config and returns its URL and a cleanup func.
 func startTestProxy(t *testing.T, ca *CA, domainFilter *filter.DomainFilter, credStore *credentials.Store, tokenVendor *credentials.TokenVendor, upstreamCAs *x509.CertPool) (proxyURL string, cleanup func()) {
 	return startTestProxyWithConfig(t, Config{
@@ -39,7 +46,7 @@ func startTestProxyWithConfig(t *testing.T, cfg Config) (proxyURL string, cleanu
 
 	cfg.ListenAddr = listener.Addr().String()
 	srv := New(cfg)
-	go srv.Serve(listener)
+	go func() { _ = srv.Serve(listener) }()
 
 	return "http://" + listener.Addr().String(), func() {
 		srv.Close()
@@ -79,7 +86,8 @@ func httpClientViaProxy(t *testing.T, proxyAddr string, caCert *x509.Certificate
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
 			TLSClientConfig: &tls.Config{
-				RootCAs: certPool,
+				RootCAs:    certPool,
+				MinVersion: tls.VersionTLS12,
 			},
 		},
 		Timeout: 5 * time.Second,
@@ -91,6 +99,7 @@ func httpClientViaProxy(t *testing.T, proxyAddr string, caCert *x509.Certificate
 }
 
 func TestIntegration_MITMProxy(t *testing.T) {
+	skipIntegration(t)
 	// Generate proxy CA
 	ca, err := GenerateCA()
 	if err != nil {
@@ -104,13 +113,16 @@ func TestIntegration_MITMProxy(t *testing.T) {
 			headers[k] = v[0]
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(headers)
+		if err := json.NewEncoder(w).Encode(headers); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer upstream.Close()
 
 	// Extract the upstream server's hostname and host:port
 	upstreamURL, _ := url.Parse(upstream.URL)
-	upstreamHostPort := upstreamURL.Host // e.g., "127.0.0.1:44637"
+	upstreamHostPort := upstreamURL.Host       // e.g., "127.0.0.1:44637"
 	upstreamHostname := upstreamURL.Hostname() // e.g., "127.0.0.1"
 
 	// Domain filter works on hostname without port
@@ -168,7 +180,9 @@ func TestIntegration_MITMProxy(t *testing.T) {
 		defer resp.Body.Close()
 
 		var headers map[string]string
-		json.NewDecoder(resp.Body).Decode(&headers)
+		if err := json.NewDecoder(resp.Body).Decode(&headers); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
 
 		auth := headers["Authorization"]
 		if auth != "Bearer test-secret-key" {
@@ -178,6 +192,7 @@ func TestIntegration_MITMProxy(t *testing.T) {
 }
 
 func TestIntegration_DomainBlocking(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -203,7 +218,7 @@ func TestIntegration_DomainBlocking(t *testing.T) {
 			!strings.Contains(err.Error(), "EOF") &&
 			!strings.Contains(err.Error(), "reset") &&
 			!strings.Contains(err.Error(), "proxy") {
-			// Accept any connection error as "blocked"
+			t.Logf("unexpected error type (still treating as blocked): %v", err)
 		}
 		return
 	}
@@ -216,6 +231,7 @@ func TestIntegration_DomainBlocking(t *testing.T) {
 }
 
 func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -228,7 +244,10 @@ func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
 			headers[k] = v[0]
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(headers)
+		if err := json.NewEncoder(w).Encode(headers); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer upstream.Close()
 
@@ -261,7 +280,9 @@ func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
 	defer resp.Body.Close()
 
 	var headers map[string]string
-	json.NewDecoder(resp.Body).Decode(&headers)
+	if err := json.NewDecoder(resp.Body).Decode(&headers); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 
 	auth := headers["Authorization"]
 	if auth != "Bearer agent-dummy" {
@@ -270,6 +291,7 @@ func TestIntegration_NoCredentialForUnmatchedDomain(t *testing.T) {
 }
 
 func TestIntegration_PortFiltering(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -278,7 +300,7 @@ func TestIntegration_PortFiltering(t *testing.T) {
 	// Start upstream on a random port (non-443)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
 
@@ -341,6 +363,7 @@ func TestIntegration_PortFiltering(t *testing.T) {
 }
 
 func TestIntegration_HeaderSuppression(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -353,7 +376,10 @@ func TestIntegration_HeaderSuppression(t *testing.T) {
 			headers[k] = v[0]
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(headers)
+		if err := json.NewEncoder(w).Encode(headers); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}))
 	defer upstream.Close()
 
@@ -382,7 +408,9 @@ func TestIntegration_HeaderSuppression(t *testing.T) {
 	defer resp.Body.Close()
 
 	var headers map[string]string
-	json.NewDecoder(resp.Body).Decode(&headers)
+	if err := json.NewDecoder(resp.Body).Decode(&headers); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 
 	if _, ok := headers["X-Forwarded-For"]; ok {
 		t.Error("X-Forwarded-For should have been stripped")
@@ -393,6 +421,7 @@ func TestIntegration_HeaderSuppression(t *testing.T) {
 }
 
 func TestIntegration_TokenVending(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -452,6 +481,7 @@ func TestIntegration_TokenVending(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -459,7 +489,7 @@ func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
 
@@ -496,6 +526,7 @@ func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -535,6 +566,7 @@ func TestIntegration_ClientFilter_BlockedIP(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_CIDR(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -542,7 +574,7 @@ func TestIntegration_ClientFilter_CIDR(t *testing.T) {
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
 
@@ -579,6 +611,7 @@ func TestIntegration_ClientFilter_CIDR(t *testing.T) {
 }
 
 func TestIntegration_ClientFilter_Disabled(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)
@@ -586,7 +619,7 @@ func TestIntegration_ClientFilter_Disabled(t *testing.T) {
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
 
@@ -617,6 +650,7 @@ func TestIntegration_ClientFilter_Disabled(t *testing.T) {
 }
 
 func TestIntegration_UntrustedUpstreamCert(t *testing.T) {
+	skipIntegration(t)
 	ca, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("generate CA: %v", err)

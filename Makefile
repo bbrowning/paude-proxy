@@ -1,4 +1,4 @@
-.PHONY: build test lint clean docker
+.PHONY: build test unit-test integration-test lint fmt-check clean docker install-hooks
 
 BINARY := paude-proxy
 IMAGE := paude-proxy:latest
@@ -9,14 +9,31 @@ build:
 test:
 	go test ./...
 
+unit-test:
+	go test -short -race ./...
+
+integration-test:
+	go test -race -run TestIntegration ./...
+
 lint:
 	go vet ./...
+
+fmt-check:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Files need formatting:"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 
 clean:
 	rm -rf bin/
 
 docker:
 	podman build -t $(IMAGE) .
+
+install-hooks:
+	uvx pre-commit install
 
 run: build
 	./bin/$(BINARY)

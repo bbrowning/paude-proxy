@@ -16,7 +16,6 @@ import (
 // Google Application Default Credentials. It handles automatic
 // token refresh. Always overrides any existing Authorization header.
 type GCloudInjector struct {
-	mu          sync.RWMutex
 	credentials *google.Credentials
 	initOnce    sync.Once
 	initErr     error

@@ -184,7 +184,7 @@ type Config struct {
 	PortFilter    *PortFilter
 	BlockedLogger *BlockedLogger
 	Verbose       bool
-	ClientFilter  *ClientFilter // If non-nil, only listed IPs/CIDRs can connect
+	ClientFilter  *ClientFilter  // If non-nil, only listed IPs/CIDRs can connect
 	UpstreamCAs   *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
 }
 
@@ -204,11 +204,12 @@ func New(cfg Config) *http.Server {
 	proxy.Tr = proxyTransport
 	proxy.Verbose = cfg.Verbose
 
-	// Set up the CA for MITM
-	goproxy.GoproxyCa = cfg.CA.TLSCert
-	goproxy.OkConnect = &goproxy.ConnectAction{Action: goproxy.ConnectMitm, TLSConfig: goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)}
-	goproxy.MitmConnect = &goproxy.ConnectAction{Action: goproxy.ConnectMitm, TLSConfig: goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)}
-	goproxy.RejectConnect = &goproxy.ConnectAction{Action: goproxy.ConnectReject, TLSConfig: goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)}
+	// Set up the CA for MITM — use local ConnectAction values instead of
+	// goproxy's package-level globals to avoid data races when multiple
+	// proxy instances are created concurrently (e.g. in tests).
+	tlsCfg := goproxy.TLSConfigFromCA(&cfg.CA.TLSCert)
+	mitmConnect := &goproxy.ConnectAction{Action: goproxy.ConnectMitm, TLSConfig: tlsCfg}
+	rejectConnect := &goproxy.ConnectAction{Action: goproxy.ConnectReject, TLSConfig: tlsCfg}
 
 	// Handle CONNECT requests: client filter, port filtering, domain filtering, MITM
 	proxy.OnRequest().HandleConnectFunc(
@@ -218,7 +219,7 @@ func New(cfg Config) *http.Server {
 				srcIP := parseClientIP(ctx)
 				if srcIP == nil || !cfg.ClientFilter.IsAllowed(srcIP) {
 					log.Printf("CLIENT_REJECTED CONNECT %s from %s (not in allowed clients)", host, clientIP(ctx))
-					return goproxy.RejectConnect, host
+					return rejectConnect, host
 				}
 			}
 
@@ -231,7 +232,7 @@ func New(cfg Config) *http.Server {
 				if cfg.BlockedLogger != nil {
 					cfg.BlockedLogger.Log(clientIP(ctx), "CONNECT", host)
 				}
-				return goproxy.RejectConnect, host
+				return rejectConnect, host
 			}
 
 			if !cfg.DomainFilter.IsAllowed(hostname) {
@@ -239,11 +240,11 @@ func New(cfg Config) *http.Server {
 				if cfg.BlockedLogger != nil {
 					cfg.BlockedLogger.Log(clientIP(ctx), "CONNECT", host)
 				}
-				return goproxy.RejectConnect, host
+				return rejectConnect, host
 			}
 
 			log.Printf("CONNECT %s (MITM)", host)
-			return goproxy.MitmConnect, host
+			return mitmConnect, host
 		},
 	)
 
@@ -322,8 +323,9 @@ func New(cfg Config) *http.Server {
 	)
 
 	return &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: proxy,
+		Addr:              cfg.ListenAddr,
+		Handler:           proxy,
+		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
