@@ -344,6 +344,115 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 	}
 }
 
+func TestBuildFromConfig_GCloudFromJSON(t *testing.T) {
+	// GCP_ADC_JSON alone (without GOOGLE_APPLICATION_CREDENTIALS) should work.
+	t.Setenv("GCP_ADC_JSON", `{"type":"authorized_user","client_id":"test","client_secret":"test","refresh_token":"test"}`)
+	os.Unsetenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "GOOGLE_APPLICATION_CREDENTIALS",
+				InjectorType: "gcloud",
+				Domains:      []string{".googleapis.com"},
+			},
+		},
+	}
+
+	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+
+	if tokenVendor == nil {
+		t.Fatal("tokenVendor should not be nil when GCP_ADC_JSON is set with valid JSON")
+	}
+	if _, ok := domainMap["GOOGLE_APPLICATION_CREDENTIALS"]; !ok {
+		t.Error("domain map should contain GOOGLE_APPLICATION_CREDENTIALS entry")
+	}
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "storage.googleapis.com"},
+		Header: make(http.Header),
+	}
+	if !store.InjectCredentials(req) {
+		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
+	}
+}
+
+func TestBuildFromConfig_GCloudJSONPreferredOverFile(t *testing.T) {
+	// GCP_ADC_JSON should be preferred even when GOOGLE_APPLICATION_CREDENTIALS
+	// points to a nonexistent file (proving the file is never read).
+	t.Setenv("GCP_ADC_JSON", `{"type":"authorized_user","client_id":"test","client_secret":"test","refresh_token":"test"}`)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/path/adc.json")
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "GOOGLE_APPLICATION_CREDENTIALS",
+				InjectorType: "gcloud",
+				Domains:      []string{".googleapis.com"},
+			},
+		},
+	}
+
+	store, tokenVendor, _ := BuildFromConfig(cfg)
+
+	if tokenVendor == nil {
+		t.Fatal("tokenVendor should not be nil — GCP_ADC_JSON should be used instead of the nonexistent file")
+	}
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "storage.googleapis.com"},
+		Header: make(http.Header),
+	}
+	if !store.InjectCredentials(req) {
+		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
+	}
+}
+
+func TestBuildFromConfig_GCloudFallbackToFile(t *testing.T) {
+	// When GCP_ADC_JSON is not set, fall back to GOOGLE_APPLICATION_CREDENTIALS file path.
+	os.Unsetenv("GCP_ADC_JSON")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/path/adc.json")
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "GOOGLE_APPLICATION_CREDENTIALS",
+				InjectorType: "gcloud",
+				Domains:      []string{".googleapis.com"},
+			},
+		},
+	}
+
+	// File doesn't exist, so gcloud should not be available
+	_, tokenVendor, _ := BuildFromConfig(cfg)
+	if tokenVendor != nil {
+		t.Error("tokenVendor should be nil when ADC file doesn't exist and GCP_ADC_JSON is unset")
+	}
+}
+
+func TestBuildFromConfig_GCloudSkippedWhenBothUnset(t *testing.T) {
+	os.Unsetenv("GCP_ADC_JSON")
+	os.Unsetenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "GOOGLE_APPLICATION_CREDENTIALS",
+				InjectorType: "gcloud",
+				Domains:      []string{".googleapis.com"},
+			},
+		},
+	}
+
+	_, tokenVendor, domainMap := BuildFromConfig(cfg)
+	if tokenVendor != nil {
+		t.Error("tokenVendor should be nil when both GCP_ADC_JSON and GOOGLE_APPLICATION_CREDENTIALS are unset")
+	}
+	if _, ok := domainMap["GOOGLE_APPLICATION_CREDENTIALS"]; ok {
+		t.Error("domain map should not contain entry when both env vars are unset")
+	}
+}
+
 func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 	t.Setenv("TEST_MIX_KEY", "mix-token")
 

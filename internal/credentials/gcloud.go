@@ -20,6 +20,7 @@ type GCloudInjector struct {
 	initOnce    sync.Once
 	initErr     error
 	adcPath     string
+	adcJSON     []byte
 	scopes      []string
 }
 
@@ -32,12 +33,28 @@ func NewGCloudInjector(adcPath string) *GCloudInjector {
 	}
 }
 
+// NewGCloudInjectorFromJSON creates an injector from raw ADC JSON content.
+// This is preferred over NewGCloudInjector when credentials are passed
+// via environment variable rather than mounted as a file.
+func NewGCloudInjectorFromJSON(data []byte) *GCloudInjector {
+	return &GCloudInjector{
+		adcJSON: data,
+		scopes:  []string{"https://www.googleapis.com/auth/cloud-platform"},
+	}
+}
+
 func (g *GCloudInjector) init() error {
 	g.initOnce.Do(func() {
-		data, err := os.ReadFile(g.adcPath)
-		if err != nil {
-			g.initErr = fmt.Errorf("read ADC file %s: %w", g.adcPath, err)
-			return
+		var data []byte
+		if len(g.adcJSON) > 0 {
+			data = g.adcJSON
+		} else {
+			var err error
+			data, err = os.ReadFile(g.adcPath)
+			if err != nil {
+				g.initErr = fmt.Errorf("read ADC file %s: %w", g.adcPath, err)
+				return
+			}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -76,8 +93,11 @@ func (g *GCloudInjector) Inject(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 }
 
-// Available returns true if the ADC file exists and can be loaded.
+// Available returns true if ADC credentials can be loaded (from JSON or file).
 func (g *GCloudInjector) Available() bool {
+	if len(g.adcJSON) > 0 {
+		return g.init() == nil
+	}
 	if _, err := os.Stat(g.adcPath); err != nil {
 		return false
 	}

@@ -81,7 +81,8 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
 | `CURSOR_API_KEY` | -> `Authorization: Bearer` for `*.cursor.com`, `*.cursorapi.com` | |
 | `GH_TOKEN` | -> `Authorization: Bearer` for `github.com`, `*.githubusercontent.com` | |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to gcloud ADC JSON | |
+| `GCP_ADC_JSON` | Inline gcloud ADC JSON content (preferred over file path) | |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to gcloud ADC JSON (fallback if `GCP_ADC_JSON` unset) | |
 
 ## Credential Routing Table
 
