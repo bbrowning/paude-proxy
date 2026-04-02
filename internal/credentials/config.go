@@ -97,9 +97,16 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 	hasCredentials := false
 	domainMap := make(map[string][]string)
 
+	gcpADCJSON := os.Getenv("GCP_ADC_JSON")
+
 	for _, entry := range cfg.Credentials {
 		value := os.Getenv(entry.EnvVar)
-		if value == "" {
+
+		// For gcloud entries, GCP_ADC_JSON takes precedence over the file path
+		// and allows processing even if GOOGLE_APPLICATION_CREDENTIALS is unset.
+		if entry.InjectorType == "gcloud" && gcpADCJSON == "" && value == "" {
+			continue
+		} else if value == "" && entry.InjectorType != "gcloud" {
 			continue
 		}
 
@@ -115,9 +122,19 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 				Key:        value,
 			}
 		case "gcloud":
-			gcloudInjector := NewGCloudInjector(value)
+			var gcloudInjector *GCloudInjector
+			if gcpADCJSON != "" {
+				gcloudInjector = NewGCloudInjectorFromJSON([]byte(gcpADCJSON))
+				log.Println("Using GCP_ADC_JSON env var for gcloud ADC credentials")
+			} else {
+				gcloudInjector = NewGCloudInjector(value)
+			}
 			if !gcloudInjector.Available() {
-				log.Printf("WARN: %s=%s but ADC not loadable", entry.EnvVar, value)
+				if gcpADCJSON != "" {
+					log.Printf("WARN: GCP_ADC_JSON set but ADC not loadable")
+				} else {
+					log.Printf("WARN: %s=%s but ADC not loadable", entry.EnvVar, value)
+				}
 				continue
 			}
 			injector = gcloudInjector
@@ -135,7 +152,6 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 			store.AddRoute(route)
 		}
 
-		// Log the credential route
 		domainDesc := formatDomains(entry.Domains)
 		log.Printf("Credential route: %s -> %s", domainDesc, injectorDescription(entry))
 		hasCredentials = true
