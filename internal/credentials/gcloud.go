@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"time"
 
 	"golang.org/x/oauth2/google"
 )
@@ -57,10 +56,10 @@ func (g *GCloudInjector) init() error {
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		creds, err := google.CredentialsFromJSON(ctx, data, g.scopes...)
+		// Use context.Background() — this context is stored by the oauth2
+		// library and reused for all token refresh HTTP calls. It must NOT
+		// be canceled or have a short timeout.
+		creds, err := google.CredentialsFromJSON(context.Background(), data, g.scopes...)
 		if err != nil {
 			g.initErr = fmt.Errorf("parse ADC credentials: %w", err)
 			return
