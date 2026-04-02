@@ -174,6 +174,10 @@ func (cf *ClientFilter) String() string {
 	return strings.Join(parts, ", ")
 }
 
+// rejectMsg is the generic response body for all rejected requests (CONNECT and plain HTTP).
+// Intentionally vague to avoid revealing why the request was blocked.
+const rejectMsg = "Request blocked by proxy policy"
+
 // Config holds proxy configuration.
 type Config struct {
 	ListenAddr    string
@@ -219,6 +223,7 @@ func New(cfg Config) *http.Server {
 				srcIP := parseClientIP(ctx)
 				if srcIP == nil || !cfg.ClientFilter.IsAllowed(srcIP) {
 					log.Printf("CLIENT_REJECTED CONNECT %s from %s (not in allowed clients)", host, clientIP(ctx))
+					ctx.Resp = goproxy.NewResponse(ctx.Req, goproxy.ContentTypeText, http.StatusForbidden, rejectMsg)
 					return rejectConnect, host
 				}
 			}
@@ -232,6 +237,7 @@ func New(cfg Config) *http.Server {
 				if cfg.BlockedLogger != nil {
 					cfg.BlockedLogger.Log(clientIP(ctx), "CONNECT", host)
 				}
+				ctx.Resp = goproxy.NewResponse(ctx.Req, goproxy.ContentTypeText, http.StatusForbidden, rejectMsg)
 				return rejectConnect, host
 			}
 
@@ -240,6 +246,7 @@ func New(cfg Config) *http.Server {
 				if cfg.BlockedLogger != nil {
 					cfg.BlockedLogger.Log(clientIP(ctx), "CONNECT", host)
 				}
+				ctx.Resp = goproxy.NewResponse(ctx.Req, goproxy.ContentTypeText, http.StatusForbidden, rejectMsg)
 				return rejectConnect, host
 			}
 
@@ -264,7 +271,7 @@ func New(cfg Config) *http.Server {
 					return req, goproxy.NewResponse(req,
 						goproxy.ContentTypeText,
 						http.StatusForbidden,
-						"Client IP not allowed by proxy policy",
+						rejectMsg,
 					)
 				}
 			}
@@ -284,7 +291,7 @@ func New(cfg Config) *http.Server {
 					return req, goproxy.NewResponse(req,
 						goproxy.ContentTypeText,
 						http.StatusForbidden,
-						"Port not allowed by proxy policy",
+						rejectMsg,
 					)
 				}
 			}
@@ -298,7 +305,7 @@ func New(cfg Config) *http.Server {
 				return req, goproxy.NewResponse(req,
 					goproxy.ContentTypeText,
 					http.StatusForbidden,
-					"Domain not allowed by proxy policy",
+					rejectMsg,
 				)
 			}
 
