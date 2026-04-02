@@ -87,6 +87,9 @@ func main() {
 	// Credential store and token vendor
 	credStore, tokenVendor := buildCredentialStore(domainFilter)
 
+	// Start background hostname re-resolution (no-op if no hostnames configured)
+	clientFilter.StartResolving()
+
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
 		ListenAddr:    listenAddr,
@@ -113,6 +116,7 @@ func main() {
 
 	<-done
 	log.Println("Shutting down...")
+	clientFilter.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

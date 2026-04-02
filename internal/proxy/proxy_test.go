@@ -157,7 +157,7 @@ func TestNewClientFilter(t *testing.T) {
 		{"CIDR", "10.0.0.0/24", false, false},
 		{"mixed", "10.0.0.1,172.16.0.0/12", false, false},
 		{"with spaces", " 10.0.0.1 , 10.0.0.2 ", false, false},
-		{"invalid IP", "notanip", false, true},
+		{"hostname", "notanip", false, false}, // treated as DNS hostname, not invalid
 		{"invalid CIDR", "10.0.0.0/99", false, true},
 	}
 	for _, tt := range tests {
@@ -214,4 +214,106 @@ func TestClientFilter_NilAllowsAll(t *testing.T) {
 	if !cf.IsAllowed(net.ParseIP("1.2.3.4")) {
 		t.Error("nil ClientFilter should allow all IPs")
 	}
+}
+
+func TestNewClientFilter_Hostnames(t *testing.T) {
+	cf, err := NewClientFilter("localhost")
+	if err != nil {
+		t.Fatalf("NewClientFilter(\"localhost\") error: %v", err)
+	}
+	if cf == nil {
+		t.Fatal("expected non-nil ClientFilter")
+	}
+	if len(cf.hostnames) != 1 || cf.hostnames[0] != "localhost" {
+		t.Errorf("expected hostnames=[localhost], got %v", cf.hostnames)
+	}
+	if len(cf.resolved["localhost"]) == 0 {
+		t.Error("expected at least one resolved IP for localhost")
+	}
+}
+
+func TestNewClientFilter_MixedIPsHostnamesCIDRs(t *testing.T) {
+	cf, err := NewClientFilter("10.0.0.1,localhost,172.16.0.0/12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cf.ips) != 1 {
+		t.Errorf("expected 1 static IP, got %d", len(cf.ips))
+	}
+	if len(cf.nets) != 1 {
+		t.Errorf("expected 1 CIDR, got %d", len(cf.nets))
+	}
+	if len(cf.hostnames) != 1 || cf.hostnames[0] != "localhost" {
+		t.Errorf("expected hostnames=[localhost], got %v", cf.hostnames)
+	}
+}
+
+func TestClientFilter_IsAllowed_WithResolvedIPs(t *testing.T) {
+	cf := &ClientFilter{
+		ips:      []net.IP{net.ParseIP("10.0.0.1")},
+		resolved: map[string][]net.IP{"myhost": {net.ParseIP("192.168.1.100")}},
+		stopCh:   make(chan struct{}),
+	}
+
+	// Static IP should match
+	if !cf.IsAllowed(net.ParseIP("10.0.0.1")) {
+		t.Error("static IP 10.0.0.1 should be allowed")
+	}
+	// Resolved IP should match
+	if !cf.IsAllowed(net.ParseIP("192.168.1.100")) {
+		t.Error("resolved IP 192.168.1.100 should be allowed")
+	}
+	// Unknown IP should not match
+	if cf.IsAllowed(net.ParseIP("10.0.0.2")) {
+		t.Error("unknown IP 10.0.0.2 should not be allowed")
+	}
+}
+
+func TestClientFilter_IsAllowed_Localhost(t *testing.T) {
+	cf, err := NewClientFilter("localhost")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// localhost should resolve to 127.0.0.1 and/or ::1
+	if !cf.IsAllowed(net.ParseIP("127.0.0.1")) && !cf.IsAllowed(net.ParseIP("::1")) {
+		t.Error("expected localhost to resolve to 127.0.0.1 or ::1")
+	}
+}
+
+func TestClientFilter_StopNilSafe(t *testing.T) {
+	var cf *ClientFilter
+	cf.Stop() // nil — should not panic
+
+	cf2, _ := NewClientFilter("10.0.0.1")
+	cf2.Stop() // no hostnames — should not panic
+}
+
+func TestClientFilter_StopDoubleCall(t *testing.T) {
+	cf, _ := NewClientFilter("localhost")
+	cf.StartResolving()
+	cf.Stop()
+	cf.Stop() // second call — should not panic
+}
+
+func TestClientFilter_String_WithHostnames(t *testing.T) {
+	cf, err := NewClientFilter("10.0.0.1,localhost")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	s := cf.String()
+	if !strings.Contains(s, "10.0.0.1") {
+		t.Errorf("String() should contain static IP, got %q", s)
+	}
+	if !strings.Contains(s, "localhost") {
+		t.Errorf("String() should contain hostname, got %q", s)
+	}
+	if !strings.Contains(s, "resolved:") {
+		t.Errorf("String() should contain resolved IPs for localhost, got %q", s)
+	}
+}
+
+func TestClientFilter_StartResolving_NilSafe(t *testing.T) {
+	// StartResolving on nil should not panic
+	var cf *ClientFilter
+	cf.StartResolving()
 }

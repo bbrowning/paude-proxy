@@ -105,20 +105,31 @@ func (bl *BlockedLogger) Close() error {
 	return bl.file.Close()
 }
 
-// ClientFilter validates client source IPs against an allowlist of IPs and CIDRs.
-// A nil or empty ClientFilter allows all clients.
+// ClientFilter validates client source IPs against an allowlist of IPs, CIDRs,
+// and DNS hostnames. Hostnames are resolved to IPs at startup and periodically
+// re-resolved in the background (every 30s) to handle dynamic IP assignments
+// (e.g., Kubernetes pods restarting). A nil or empty ClientFilter allows all clients.
 type ClientFilter struct {
-	ips  []net.IP
-	nets []*net.IPNet
+	ips       []net.IP
+	nets      []*net.IPNet
+	hostnames []string
+	resolved  map[string][]net.IP // hostname -> resolved IPs (protected by mu)
+	mu        sync.RWMutex
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 }
 
-// NewClientFilter parses a comma-separated list of IPs and CIDRs.
-// Returns nil if the input is empty (allow all).
+// NewClientFilter parses a comma-separated list of IPs, CIDRs, and DNS hostnames.
+// Returns nil if the input is empty (allow all). Hostnames are resolved immediately;
+// resolution failures are logged as warnings (the hostname may become resolvable later).
 func NewClientFilter(s string) (*ClientFilter, error) {
 	if s == "" {
 		return nil, nil
 	}
-	cf := &ClientFilter{}
+	cf := &ClientFilter{
+		stopCh:   make(chan struct{}),
+		resolved: make(map[string][]net.IP),
+	}
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -130,18 +141,98 @@ func NewClientFilter(s string) (*ClientFilter, error) {
 				return nil, fmt.Errorf("invalid CIDR %q: %w", part, err)
 			}
 			cf.nets = append(cf.nets, ipNet)
-		} else {
-			ip := net.ParseIP(part)
-			if ip == nil {
-				return nil, fmt.Errorf("invalid IP %q", part)
-			}
+		} else if ip := net.ParseIP(part); ip != nil {
 			cf.ips = append(cf.ips, ip)
+		} else {
+			cf.hostnames = append(cf.hostnames, part)
 		}
 	}
+
+	if len(cf.hostnames) > 0 {
+		cf.resolveHostnames(true)
+	}
+
 	return cf, nil
 }
 
-// IsAllowed returns true if the given IP is in the allowlist.
+// resolveHostnames resolves all configured hostnames and updates the resolved IP map.
+// When initialResolve is true, all results are logged. Otherwise, only changes are logged.
+func (cf *ClientFilter) resolveHostnames(initialResolve bool) {
+	newResolved := make(map[string][]net.IP, len(cf.hostnames))
+	for _, hostname := range cf.hostnames {
+		addrs, err := net.LookupHost(hostname)
+		if err != nil {
+			log.Printf("WARNING: failed to resolve allowed client hostname %q: %v", hostname, err)
+			continue
+		}
+		var ips []net.IP
+		for _, addr := range addrs {
+			if ip := net.ParseIP(addr); ip != nil {
+				ips = append(ips, ip)
+			}
+		}
+		newResolved[hostname] = ips
+	}
+
+	cf.mu.Lock()
+	old := cf.resolved
+	cf.resolved = newResolved
+	cf.mu.Unlock()
+
+	for _, hostname := range cf.hostnames {
+		newIPs := newResolved[hostname]
+		oldIPs := old[hostname]
+		if initialResolve || !ipsEqual(newIPs, oldIPs) {
+			ipStrs := make([]string, len(newIPs))
+			for i, ip := range newIPs {
+				ipStrs[i] = ip.String()
+			}
+			log.Printf("Resolved allowed client hostname %q -> %s", hostname, strings.Join(ipStrs, ", "))
+		}
+	}
+}
+
+// ipsEqual returns true if two IP slices contain the same IPs in the same order.
+func ipsEqual(a, b []net.IP) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].Equal(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// StartResolving starts a background goroutine that re-resolves all hostname
+// entries every 30 seconds to handle pods restarting with new IPs.
+func (cf *ClientFilter) StartResolving() {
+	if cf == nil || len(cf.hostnames) == 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cf.resolveHostnames(false)
+			case <-cf.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+// Stop stops the background hostname re-resolution goroutine. Safe to call multiple times.
+func (cf *ClientFilter) Stop() {
+	if cf == nil || len(cf.hostnames) == 0 {
+		return
+	}
+	cf.stopOnce.Do(func() { close(cf.stopCh) })
+}
+
 func (cf *ClientFilter) IsAllowed(ip net.IP) bool {
 	if cf == nil {
 		return true
@@ -156,10 +247,19 @@ func (cf *ClientFilter) IsAllowed(ip net.IP) bool {
 			return true
 		}
 	}
+	cf.mu.RLock()
+	resolved := cf.resolved
+	cf.mu.RUnlock()
+	for _, ips := range resolved {
+		for _, allowed := range ips {
+			if allowed.Equal(ip) {
+				return true
+			}
+		}
+	}
 	return false
 }
 
-// String returns a human-readable representation of the filter.
 func (cf *ClientFilter) String() string {
 	if cf == nil {
 		return "disabled (all clients allowed)"
@@ -170,6 +270,22 @@ func (cf *ClientFilter) String() string {
 	}
 	for _, ipNet := range cf.nets {
 		parts = append(parts, ipNet.String())
+	}
+	if len(cf.hostnames) > 0 {
+		cf.mu.RLock()
+		resolved := cf.resolved
+		cf.mu.RUnlock()
+		for _, hostname := range cf.hostnames {
+			if ips, ok := resolved[hostname]; ok && len(ips) > 0 {
+				ipStrs := make([]string, len(ips))
+				for i, ip := range ips {
+					ipStrs[i] = ip.String()
+				}
+				parts = append(parts, fmt.Sprintf("%s (resolved: %s)", hostname, strings.Join(ipStrs, ", ")))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s (unresolved)", hostname))
+			}
+		}
 	}
 	return strings.Join(parts, ", ")
 }
