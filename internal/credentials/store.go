@@ -10,8 +10,8 @@ import (
 // Injector can inject credentials into an HTTP request.
 type Injector interface {
 	// Inject adds credential headers to the request.
-	// It should only inject if the relevant header is not already present.
-	Inject(req *http.Request)
+	// Returns true if the credential was successfully set, false on error.
+	Inject(req *http.Request) bool
 }
 
 // Route maps a domain pattern to a credential injector.
@@ -48,8 +48,10 @@ func (s *Store) AddRoute(route Route) {
 }
 
 // InjectCredentials finds the first matching route for the request's
-// host and injects credentials. Returns true if credentials were injected.
-func (s *Store) InjectCredentials(req *http.Request) bool {
+// host and injects credentials. Returns (matched, injected) where matched
+// indicates a route was found and injected indicates the credential was
+// successfully set.
+func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -72,11 +74,15 @@ func (s *Store) InjectCredentials(req *http.Request) bool {
 		}
 
 		if matched {
-			route.Injector.Inject(req)
-			log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
-			return true
+			ok := route.Injector.Inject(req)
+			if ok {
+				log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+			} else {
+				log.Printf("CREDENTIAL_INJECT_FAILED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+			}
+			return true, ok
 		}
 	}
 
-	return false
+	return false, false
 }

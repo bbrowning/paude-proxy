@@ -311,7 +311,15 @@ func New(cfg Config) *http.Server {
 
 			// Inject credentials for API requests
 			if cfg.CredStore != nil {
-				cfg.CredStore.InjectCredentials(req)
+				matched, injected := cfg.CredStore.InjectCredentials(req)
+				if matched && !injected {
+					log.Printf("CREDENTIAL_INJECT_FAILED_502 method=%s host=%s path=%s", req.Method, req.URL.Host, req.URL.Path)
+					return req, goproxy.NewResponse(req,
+						goproxy.ContentTypeText,
+						http.StatusBadGateway,
+						"Proxy credential injection failed",
+					)
+				}
 			}
 
 			// Suppress proxy identity headers
