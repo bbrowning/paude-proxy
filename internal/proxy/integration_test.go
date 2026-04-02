@@ -691,3 +691,59 @@ func TestIntegration_UntrustedUpstreamCert(t *testing.T) {
 	// Connection error is also acceptable — proxy rejected the upstream
 	t.Logf("got error (expected — proxy rejected untrusted upstream cert): %v", err)
 }
+
+// failingInjector always fails to inject credentials.
+type failingInjector struct{}
+
+func (f *failingInjector) Inject(req *http.Request) bool {
+	return false
+}
+
+func TestIntegration_CredentialInjectionFailure_Returns502(t *testing.T) {
+	skipIntegration(t)
+
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	upstreamHostname := upstreamURL.Hostname()
+
+	df := filter.NewDomainFilter(upstreamHostname)
+
+	store := credentials.NewStore()
+	store.AddRoute(credentials.Route{
+		ExactDomain: upstreamHostname,
+		Injector:    &failingInjector{},
+	})
+
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+	defer cleanup()
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 Bad Gateway, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "Proxy credential injection failed" {
+		t.Errorf("expected injection failure message, got %q", got)
+	}
+}

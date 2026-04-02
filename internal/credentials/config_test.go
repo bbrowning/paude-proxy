@@ -188,7 +188,7 @@ func TestBuildFromConfig_Bearer(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req) {
+	if matched, injected := store.InjectCredentials(req); !matched || !injected {
 		t.Error("should match api.openai.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-123" {
@@ -216,7 +216,7 @@ func TestBuildFromConfig_APIKey(t *testing.T) {
 		URL:    &url.URL{Host: "api.anthropic.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req) {
+	if matched, injected := store.InjectCredentials(req); !matched || !injected {
 		t.Error("should match api.anthropic.com")
 	}
 	if got := req.Header.Get("x-api-key"); got != "sk-ant-test" {
@@ -244,7 +244,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "github.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req) {
+	if matched, injected := store.InjectCredentials(req); !matched || !injected {
 		t.Error("should match github.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test" {
@@ -256,7 +256,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "raw.githubusercontent.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req2) {
+	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
 		t.Error("should match raw.githubusercontent.com")
 	}
 	if got := req2.Header.Get("Authorization"); got != "Bearer ghp_test" {
@@ -289,7 +289,7 @@ func TestBuildFromConfig_MissingEnvVarSkipped(t *testing.T) {
 		URL:    &url.URL{Host: "api.example.com"},
 		Header: make(http.Header),
 	}
-	if store.InjectCredentials(req) {
+	if matched, _ := store.InjectCredentials(req); matched {
 		t.Error("should not match when env var is unset")
 	}
 }
@@ -324,7 +324,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.a.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req1) {
+	if matched, injected := store.InjectCredentials(req1); !matched || !injected {
 		t.Error("should match api.a.com")
 	}
 	if got := req1.Header.Get("Authorization"); got != "Bearer key-a" {
@@ -336,7 +336,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.b.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req2) {
+	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
 		t.Error("should match api.b.com")
 	}
 	if got := req2.Header.Get("Authorization"); got != "Bearer key-b" {
@@ -372,7 +372,7 @@ func TestBuildFromConfig_GCloudFromJSON(t *testing.T) {
 		URL:    &url.URL{Host: "storage.googleapis.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req) {
+	if matched, _ := store.InjectCredentials(req); !matched {
 		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
 	}
 }
@@ -403,7 +403,7 @@ func TestBuildFromConfig_GCloudJSONPreferredOverFile(t *testing.T) {
 		URL:    &url.URL{Host: "storage.googleapis.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req) {
+	if matched, _ := store.InjectCredentials(req); !matched {
 		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
 	}
 }
@@ -473,7 +473,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "exact.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req1) {
+	if matched, injected := store.InjectCredentials(req1); !matched || !injected {
 		t.Error("should match exact.com")
 	}
 
@@ -482,7 +482,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "sub.suffix.com"},
 		Header: make(http.Header),
 	}
-	if !store.InjectCredentials(req2) {
+	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
 		t.Error("should match sub.suffix.com")
 	}
 
@@ -491,7 +491,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "other.com"},
 		Header: make(http.Header),
 	}
-	if store.InjectCredentials(req3) {
+	if matched, _ := store.InjectCredentials(req3); matched {
 		t.Error("should not match other.com")
 	}
 }

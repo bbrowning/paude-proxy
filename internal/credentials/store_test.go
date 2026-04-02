@@ -18,7 +18,8 @@ func TestStore_InjectCredentials_ExactDomain(t *testing.T) {
 		Header: make(http.Header),
 	}
 
-	if !store.InjectCredentials(req) {
+	matched, injected := store.InjectCredentials(req)
+	if !matched || !injected {
 		t.Error("should match github.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test123" {
@@ -38,7 +39,8 @@ func TestStore_InjectCredentials_DomainSuffix(t *testing.T) {
 		Header: make(http.Header),
 	}
 
-	if !store.InjectCredentials(req) {
+	matched, injected := store.InjectCredentials(req)
+	if !matched || !injected {
 		t.Error("should match api.openai.com via suffix .openai.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
@@ -58,7 +60,8 @@ func TestStore_InjectCredentials_NoMatch(t *testing.T) {
 		Header: make(http.Header),
 	}
 
-	if store.InjectCredentials(req) {
+	matched, _ := store.InjectCredentials(req)
+	if matched {
 		t.Error("should not match evil.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "" {
@@ -80,7 +83,10 @@ func TestStore_InjectCredentials_AlwaysOverrides(t *testing.T) {
 	// Agent sets a dummy/placeholder token
 	req.Header.Set("Authorization", "Bearer paude-proxy-managed")
 
-	store.InjectCredentials(req)
+	matched, injected := store.InjectCredentials(req)
+	if !matched || !injected {
+		t.Error("should match and inject for api.openai.com")
+	}
 	if got := req.Header.Get("Authorization"); got != "Bearer proxy-token" {
 		t.Errorf("proxy should override agent's dummy token: got %q, want %q", got, "Bearer proxy-token")
 	}
@@ -90,7 +96,9 @@ func TestAPIKeyInjector(t *testing.T) {
 	inj := &APIKeyInjector{HeaderName: "x-api-key", Key: "sk-ant-test"}
 
 	req := &http.Request{Header: make(http.Header)}
-	inj.Inject(req)
+	if !inj.Inject(req) {
+		t.Error("Inject should return true")
+	}
 	if got := req.Header.Get("x-api-key"); got != "sk-ant-test" {
 		t.Errorf("x-api-key = %q, want %q", got, "sk-ant-test")
 	}
@@ -98,7 +106,9 @@ func TestAPIKeyInjector(t *testing.T) {
 	// Should override existing (agent may have a dummy placeholder)
 	req2 := &http.Request{Header: make(http.Header)}
 	req2.Header.Set("x-api-key", "paude-proxy-managed")
-	inj.Inject(req2)
+	if !inj.Inject(req2) {
+		t.Error("Inject should return true")
+	}
 	if got := req2.Header.Get("x-api-key"); got != "sk-ant-test" {
 		t.Errorf("should override dummy key: got %q, want %q", got, "sk-ant-test")
 	}
@@ -120,8 +130,42 @@ func TestStore_FirstMatchWins(t *testing.T) {
 		Header: make(http.Header),
 	}
 
-	store.InjectCredentials(req)
+	matched, injected := store.InjectCredentials(req)
+	if !matched || !injected {
+		t.Error("should match and inject for api.openai.com")
+	}
 	if got := req.Header.Get("Authorization"); got != "Bearer exact-token" {
 		t.Errorf("first match should win: got %q", got)
+	}
+}
+
+// failingInjector is a mock that always fails injection.
+type failingInjector struct{}
+
+func (f *failingInjector) Inject(req *http.Request) bool {
+	return false
+}
+
+func TestStore_InjectCredentials_InjectorFails(t *testing.T) {
+	store := NewStore()
+	store.AddRoute(Route{
+		ExactDomain: "example.com",
+		Injector:    &failingInjector{},
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "example.com"},
+		Header: make(http.Header),
+	}
+
+	matched, injected := store.InjectCredentials(req)
+	if !matched {
+		t.Error("should match example.com")
+	}
+	if injected {
+		t.Error("should not report injection as successful")
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization should be empty, got %q", got)
 	}
 }
