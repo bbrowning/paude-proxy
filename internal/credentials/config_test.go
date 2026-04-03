@@ -232,35 +232,40 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 			{
 				EnvVar:       "TEST_GH_TOKEN",
 				InjectorType: "bearer",
-				Domains:      []string{"github.com", "api.github.com", ".githubusercontent.com"},
+				Domains:      []string{"api.github.com"},
 			},
 		},
 	}
 
 	store, _, _ := BuildFromConfig(cfg)
 
-	// Test exact domain match
 	req := &http.Request{
-		URL:    &url.URL{Host: "github.com"},
+		URL:    &url.URL{Host: "api.github.com"},
 		Header: make(http.Header),
 	}
 	if matched, injected := store.InjectCredentials(req); !matched || !injected {
-		t.Error("should match github.com")
+		t.Error("should match api.github.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer ghp_test")
 	}
 
-	// Test suffix domain match
+	// github.com should NOT match (no PAT for git clone of public repos)
 	req2 := &http.Request{
+		URL:    &url.URL{Host: "github.com"},
+		Header: make(http.Header),
+	}
+	if matched, _ := store.InjectCredentials(req2); matched {
+		t.Error("should not match github.com")
+	}
+
+	// raw.githubusercontent.com should NOT match
+	req3 := &http.Request{
 		URL:    &url.URL{Host: "raw.githubusercontent.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
-		t.Error("should match raw.githubusercontent.com")
-	}
-	if got := req2.Header.Get("Authorization"); got != "Bearer ghp_test" {
-		t.Errorf("Authorization = %q, want %q", got, "Bearer ghp_test")
+	if matched, _ := store.InjectCredentials(req3); matched {
+		t.Error("should not match raw.githubusercontent.com")
 	}
 }
 
