@@ -93,8 +93,7 @@ The default credential routing is defined in `internal/credentials/credentials.j
 | `*.anthropic.com` | `x-api-key: <key>` | `ANTHROPIC_API_KEY` |
 | `*.openai.com` | `Authorization: Bearer <key>` | `OPENAI_API_KEY` |
 | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` | `CURSOR_API_KEY` |
-| `github.com`, `api.github.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
-| `*.githubusercontent.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
+| `api.github.com` | `Authorization: Bearer <pat>` | `GH_TOKEN` |
 | `*.googleapis.com` | `Authorization: Bearer <token>` | gcloud ADC (auto-refresh) |
 
 ## Client Compatibility
