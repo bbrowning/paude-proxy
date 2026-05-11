@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -396,12 +397,28 @@ func New(cfg Config) *http.Server {
 				return nil, nil
 			}
 			if req.URL == nil {
-				log.Printf("DEFENSIVE_CHECK: DoFunc received request with nil URL from client=%s", clientIP(ctx))
-				return req, goproxy.NewResponse(req,
-					goproxy.ContentTypeText,
-					http.StatusBadRequest,
-					"Malformed request",
-				)
+				// goproxy doesn't properly reconstruct req.URL from HTTP/2 pseudo-headers in MITM mode.
+				// This commonly happens with gRPC clients (e.g., dolt's eventsapi).
+				// Log diagnostics and attempt reconstruction from available fields.
+				log.Printf("DEFENSIVE_CHECK: DoFunc req.URL is nil - Method=%q Host=%q RequestURI=%q Proto=%q from client=%s",
+					req.Method, req.Host, req.RequestURI, req.Proto, clientIP(ctx))
+
+				// Try to reconstruct URL from Host and RequestURI (populated from HTTP/2 pseudo-headers)
+				if req.Host != "" && req.RequestURI != "" {
+					req.URL = &url.URL{
+						Scheme: "https", // MITM tunnel is always HTTPS
+						Host:   req.Host,
+						Path:   req.RequestURI,
+					}
+					log.Printf("DEFENSIVE_CHECK: Reconstructed URL from Host+RequestURI: %s", req.URL.String())
+				} else {
+					log.Printf("DEFENSIVE_CHECK: Cannot reconstruct URL - missing Host or RequestURI")
+					return req, goproxy.NewResponse(req,
+						goproxy.ContentTypeText,
+						http.StatusBadRequest,
+						"Malformed request",
+					)
+				}
 			}
 
 			// Source IP filtering for plain HTTP proxy requests.
