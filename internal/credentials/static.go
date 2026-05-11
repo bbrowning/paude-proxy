@@ -1,8 +1,19 @@
 package credentials
 
 import (
+	"log"
 	"net/http"
 )
+
+// validateRequest checks if request is valid for credential injection.
+// Returns false if req or req.Header is nil, logging the injector name for debugging.
+func validateRequest(req *http.Request, injectorName string) bool {
+	if req == nil || req.Header == nil {
+		log.Printf("DEFENSIVE_CHECK: %s.Inject called with nil request or Header", injectorName)
+		return false
+	}
+	return true
+}
 
 // HeaderInjector injects a static value into a specific header.
 // Always overrides any existing value — the agent should never
@@ -15,6 +26,9 @@ type HeaderInjector struct {
 }
 
 func (h *HeaderInjector) Inject(req *http.Request) bool {
+	if !validateRequest(req, "HeaderInjector") {
+		return false
+	}
 	req.Header.Set(h.Header, h.Value)
 	return true
 }
@@ -26,6 +40,9 @@ type BearerInjector struct {
 }
 
 func (b *BearerInjector) Inject(req *http.Request) bool {
+	if !validateRequest(req, "BearerInjector") {
+		return false
+	}
 	req.Header.Set("Authorization", "Bearer "+b.Token)
 	return true
 }
@@ -38,6 +55,9 @@ type APIKeyInjector struct {
 }
 
 func (a *APIKeyInjector) Inject(req *http.Request) bool {
+	if !validateRequest(req, "APIKeyInjector") {
+		return false
+	}
 	req.Header.Set(a.HeaderName, a.Key)
 	return true
 }

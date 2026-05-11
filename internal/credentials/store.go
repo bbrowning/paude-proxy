@@ -55,6 +55,10 @@ func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if req == nil || req.URL == nil {
+		return false, false
+	}
+
 	host := req.URL.Host
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]

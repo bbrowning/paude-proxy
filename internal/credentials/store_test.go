@@ -169,3 +169,37 @@ func TestStore_InjectCredentials_InjectorFails(t *testing.T) {
 		t.Errorf("Authorization should be empty, got %q", got)
 	}
 }
+
+// TestStore_InjectCredentials_NilRequest tests defensive nil checks
+func TestStore_InjectCredentials_NilRequest(t *testing.T) {
+	store := NewStore()
+	store.AddRoute(Route{
+		ExactDomain: "example.com",
+		Injector:    &BearerInjector{Token: "test-token"},
+	})
+
+	// Should handle nil request gracefully
+	matched, injected := store.InjectCredentials(nil)
+	if matched || injected {
+		t.Error("nil request should return (false, false)")
+	}
+}
+
+func TestStore_InjectCredentials_NilURL(t *testing.T) {
+	store := NewStore()
+	store.AddRoute(Route{
+		ExactDomain: "example.com",
+		Injector:    &BearerInjector{Token: "test-token"},
+	})
+
+	// Request with nil URL
+	req := &http.Request{
+		URL:    nil,
+		Header: make(http.Header),
+	}
+
+	matched, injected := store.InjectCredentials(req)
+	if matched || injected {
+		t.Error("request with nil URL should return (false, false)")
+	}
+}
