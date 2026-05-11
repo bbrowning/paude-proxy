@@ -8,6 +8,18 @@ import (
 	"net/http"
 )
 
+// errorResponse creates an HTTP error response with plain text content.
+func errorResponse(statusCode int, message string) *http.Response {
+	return &http.Response{
+		StatusCode:    statusCode,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"text/plain"}},
+		Body:          io.NopCloser(bytes.NewReader([]byte(message))),
+		ContentLength: int64(len(message)),
+	}
+}
+
 // TokenVendor intercepts OAuth2 token exchange requests from the agent's
 // Google Auth library and returns dummy tokens.
 //
@@ -36,6 +48,10 @@ type tokenResponse struct {
 // IsTokenExchange returns true if the request is an OAuth2 token exchange
 // to Google's token endpoint.
 func IsTokenExchange(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+
 	host := req.URL.Host
 	if host == "" {
 		host = req.Host
@@ -51,6 +67,11 @@ func IsTokenExchange(req *http.Request) bool {
 // a dummy access token. The real token injection happens later via the
 // GCloudInjector when the agent makes API calls to *.googleapis.com.
 func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
+	if req == nil || req.URL == nil {
+		log.Printf("DEFENSIVE_CHECK: HandleTokenExchange called with nil request or URL")
+		return errorResponse(http.StatusBadRequest, "Malformed token exchange request")
+	}
+
 	resp := &tokenResponse{
 		AccessToken: "paude-proxy-managed",
 		ExpiresIn:   3600,
@@ -60,7 +81,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("ERROR token vendor: marshal response: %v", err)
-		return nil
+		return errorResponse(http.StatusInternalServerError, "Internal token vendor error")
 	}
 
 	log.Printf("TOKEN_VEND host=%s path=%s (returned dummy token, real injection at request time)", req.URL.Host, req.URL.Path)

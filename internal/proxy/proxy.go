@@ -310,6 +310,14 @@ type Config struct {
 
 // New creates a configured goproxy server.
 func New(cfg Config) *http.Server {
+	// DEFENSIVE: Validate required configuration
+	if cfg.CA == nil {
+		log.Fatal("FATAL: proxy.New called with nil CA - this is a programming error")
+	}
+	if cfg.DomainFilter == nil {
+		log.Fatal("FATAL: proxy.New called with nil DomainFilter - this is a programming error")
+	}
+
 	proxy := goproxy.NewProxyHttpServer()
 	// Override goproxy's default transport which uses InsecureSkipVerify: true.
 	// We MUST verify upstream server TLS certificates to prevent credential theft via MITM.
@@ -334,6 +342,11 @@ func New(cfg Config) *http.Server {
 	// Handle CONNECT requests: client filter, port filtering, domain filtering, MITM
 	proxy.OnRequest().HandleConnectFunc(
 		func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+			if ctx.Req == nil {
+				log.Printf("DEFENSIVE_CHECK: CONNECT handler received nil request for host=%s", host)
+				return rejectConnect, host
+			}
+
 			// Source IP filtering
 			if cfg.ClientFilter != nil {
 				srcIP := parseClientIP(ctx)
@@ -378,6 +391,19 @@ func New(cfg Config) *http.Server {
 	// - Suppress proxy identity headers
 	proxy.OnRequest().DoFunc(
 		func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			if req == nil {
+				log.Printf("DEFENSIVE_CHECK: DoFunc received nil request from client=%s", clientIP(ctx))
+				return nil, nil
+			}
+			if req.URL == nil {
+				log.Printf("DEFENSIVE_CHECK: DoFunc received request with nil URL from client=%s", clientIP(ctx))
+				return req, goproxy.NewResponse(req,
+					goproxy.ContentTypeText,
+					http.StatusBadRequest,
+					"Malformed request",
+				)
+			}
+
 			// Source IP filtering for plain HTTP proxy requests.
 			// MITM'd HTTPS requests already passed filtering in HandleConnectFunc.
 			if cfg.ClientFilter != nil && req.URL.Scheme == "http" {
