@@ -132,6 +132,34 @@ func TestLoadDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultConfig_OpenAIIncludesChatGPT(t *testing.T) {
+	cfg, err := LoadDefaultConfig()
+	if err != nil {
+		t.Fatalf("default config should be valid: %v", err)
+	}
+
+	var openAIEntry *CredentialEntry
+	for i := range cfg.Credentials {
+		if cfg.Credentials[i].EnvVar == "OPENAI_API_KEY" {
+			openAIEntry = &cfg.Credentials[i]
+			break
+		}
+	}
+	if openAIEntry == nil {
+		t.Fatal("default config missing OPENAI_API_KEY entry")
+	}
+
+	domainSet := make(map[string]bool)
+	for _, d := range openAIEntry.Domains {
+		domainSet[d] = true
+	}
+	for _, want := range []string{"chatgpt.com", ".chatgpt.com"} {
+		if !domainSet[want] {
+			t.Errorf("OPENAI_API_KEY domains missing %q, got %v", want, openAIEntry.Domains)
+		}
+	}
+}
+
 func TestLoadConfig_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "creds.json")
