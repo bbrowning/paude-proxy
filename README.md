@@ -303,6 +303,7 @@ See [`docs/PAUDE_INTEGRATION.md`](docs/PAUDE_INTEGRATION.md) for integration det
 - **[Aegis](https://github.com/getaegis/aegis)** — TypeScript, static API keys only, no gcloud ADC, no MITM
 - **Envoy + Go filter** — MITM forward proxy with dynamic cert generation is complex in Envoy; goproxy is purpose-built for this
 - **Squid with ssl-bump** — Would need ICAP/eCAP adapter for credential injection; much more complex for the same result
+- **[Clawpatrol](https://clawpatrol.dev/)** — multi-protocol security gateway (HTTP, SQL, SSH, K8s) with policy engine, WireGuard transport, and LLM-based approval workflows; far more machinery than credential injection alone requires
 
 ## License
 
