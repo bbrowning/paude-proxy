@@ -84,23 +84,24 @@ func main() {
 	defer blockedLogger.Close()
 	log.Printf("Blocked request log: %s", blockedLogPath)
 
-	// Credential store and token vendor
-	credStore, tokenVendor := buildCredentialStore(domainFilter)
+	// Credential store, token vendor, and Anthropic OAuth injector
+	credStore, tokenVendor, anthInjector := buildCredentialStore(domainFilter)
 
 	// Start background hostname re-resolution (no-op if no hostnames configured)
 	clientFilter.StartResolving()
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
-		ListenAddr:    listenAddr,
-		CA:            ca,
-		DomainFilter:  domainFilter,
-		CredStore:     credStore,
-		TokenVendor:   tokenVendor,
-		PortFilter:    portFilter,
-		BlockedLogger: blockedLogger,
-		Verbose:       verbose,
-		ClientFilter:  clientFilter,
+		ListenAddr:        listenAddr,
+		CA:                ca,
+		DomainFilter:      domainFilter,
+		CredStore:         credStore,
+		TokenVendor:       tokenVendor,
+		PortFilter:        portFilter,
+		BlockedLogger:     blockedLogger,
+		Verbose:           verbose,
+		ClientFilter:      clientFilter,
+		AnthropicInjector: anthInjector,
 	})
 
 	// Graceful shutdown
@@ -127,7 +128,7 @@ func main() {
 	log.Println("Stopped")
 }
 
-func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store, *credentials.TokenVendor) {
+func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store, *credentials.TokenVendor, *credentials.AnthropicOAuthInjector) {
 	var cfg *credentials.CredentialConfig
 	var err error
 
@@ -143,7 +144,7 @@ func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store
 		log.Fatalf("Failed to load credential config: %v", err)
 	}
 
-	store, tokenVendor, domainMap := credentials.BuildFromConfig(cfg)
+	store, tokenVendor, domainMap, anthInjector := credentials.BuildFromConfig(cfg)
 
 	// Validate: warn if credentials are configured but their domains aren't allowed
 	if !domainFilter.AllowAll() {
@@ -160,7 +161,7 @@ func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store
 		}
 	}
 
-	return store, tokenVendor
+	return store, tokenVendor, anthInjector
 }
 
 func envOr(key, fallback string) string {

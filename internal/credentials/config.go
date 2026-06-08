@@ -23,7 +23,7 @@ type CredentialEntry struct {
 	// EnvVar is the environment variable name to read the credential from.
 	EnvVar string `json:"env_var"`
 
-	// InjectorType is one of: "bearer", "api_key", "gcloud".
+	// InjectorType is one of: "bearer", "api_key", "gcloud", "anthropic_oauth".
 	InjectorType string `json:"injector"`
 
 	// Params holds injector-specific parameters (e.g., "header_name" for api_key).
@@ -36,9 +36,10 @@ type CredentialEntry struct {
 }
 
 var validInjectorTypes = map[string]bool{
-	"bearer":  true,
-	"api_key": true,
-	"gcloud":  true,
+	"bearer":          true,
+	"api_key":         true,
+	"gcloud":          true,
+	"anthropic_oauth": true,
 }
 
 // ParseConfig parses and validates a credential config from JSON bytes.
@@ -53,7 +54,7 @@ func ParseConfig(data []byte) (*CredentialConfig, error) {
 			return nil, fmt.Errorf("credential entry %d: env_var is required", i)
 		}
 		if !validInjectorTypes[entry.InjectorType] {
-			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud)", i, entry.EnvVar, entry.InjectorType)
+			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud, anthropic_oauth)", i, entry.EnvVar, entry.InjectorType)
 		}
 		if len(entry.Domains) == 0 {
 			return nil, fmt.Errorf("credential entry %d (%s): at least one domain is required", i, entry.EnvVar)
@@ -89,11 +90,13 @@ func LoadDefaultConfig() (*CredentialConfig, error) {
 
 // BuildFromConfig creates a credential Store and optional TokenVendor from
 // a parsed config. It reads credential values from environment variables.
-// Returns the store, token vendor (nil if no gcloud entry), and a map of
-// env var names to their domain lists (for domain filter validation).
-func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]string) {
+// Returns the store, token vendor (nil if no gcloud or anthropic_oauth entry),
+// a map of env var names to their domain lists (for domain filter validation),
+// and the AnthropicOAuthInjector (nil if no anthropic_oauth entry was active).
+func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]string, *AnthropicOAuthInjector) {
 	store := NewStore()
 	var tokenVendor *TokenVendor
+	var anthropicInjector *AnthropicOAuthInjector
 	hasCredentials := false
 	domainMap := make(map[string][]string)
 
@@ -140,6 +143,17 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 			injector = gcloudInjector
 			tokenVendor = NewTokenVendor()
 			log.Println("Token vendor: ENABLED (returns dummy tokens for oauth2.googleapis.com/token)")
+		case "anthropic_oauth":
+			// value is the path to the mounted credentials file.
+			inj := NewAnthropicOAuthInjector(value)
+			if !inj.Available() {
+				log.Printf("WARN: %s=%s but Anthropic OAuth creds not loadable", entry.EnvVar, value)
+				continue
+			}
+			injector = inj
+			anthropicInjector = inj
+			tokenVendor = NewTokenVendor()
+			log.Println("Anthropic OAuth: ENABLED")
 		}
 
 		for _, domain := range entry.Domains {
@@ -161,7 +175,7 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 		log.Println("No credential routes configured")
 	}
 
-	return store, tokenVendor, domainMap
+	return store, tokenVendor, domainMap, anthropicInjector
 }
 
 func formatDomains(domains []string) string {
@@ -184,6 +198,8 @@ func injectorDescription(entry CredentialEntry) string {
 		return entry.Params["header_name"]
 	case "gcloud":
 		return "gcloud ADC Bearer token"
+	case "anthropic_oauth":
+		return "Anthropic OAuth Bearer token"
 	default:
 		return entry.InjectorType
 	}

@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,6 +21,12 @@ import (
 	"github.com/bbrowning/paude-proxy/internal/credentials"
 	"github.com/bbrowning/paude-proxy/internal/filter"
 )
+
+// anthropicRefreshMarker is stored in goproxy's ctx.UserData by the request
+// handler to flag that the matching response is an intercepted Anthropic OAuth
+// refresh, so the response handler knows to capture the real tokens and swap in
+// a dummy body.
+type anthropicRefreshMarker struct{}
 
 // PortFilter controls which ports are allowed for HTTP and CONNECT requests.
 type PortFilter struct {
@@ -307,6 +315,12 @@ type Config struct {
 	Verbose       bool
 	ClientFilter  *ClientFilter  // If non-nil, only listed IPs/CIDRs can connect
 	UpstreamCAs   *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
+
+	// AnthropicInjector, if non-nil, enables piggybacking on Claude Code's
+	// native OAuth refresh: the proxy rewrites the agent's refresh request with
+	// the real refresh token, captures the rotated tokens from the upstream
+	// response, and hands the agent a dummy response.
+	AnthropicInjector *credentials.AnthropicOAuthInjector
 }
 
 // New creates a configured goproxy server.
@@ -468,6 +482,33 @@ func New(cfg Config) *http.Server {
 				)
 			}
 
+			// Piggyback on Claude Code's native OAuth refresh: rewrite the
+			// agent's refresh request with the real refresh token and forward
+			// it upstream. The response handler captures the rotated tokens and
+			// returns a dummy body to the agent.
+			if cfg.AnthropicInjector != nil && credentials.IsAnthropicTokenExchange(req) {
+				body, err := io.ReadAll(req.Body)
+				_ = req.Body.Close()
+				if err != nil {
+					return req, goproxy.NewResponse(ctx.Req, goproxy.ContentTypeText, http.StatusBadGateway, rejectMsg)
+				}
+				newBody, ok := rewriteRefreshBody(body, cfg.AnthropicInjector.CurrentRefreshToken())
+				if !ok {
+					// Not a refresh_token grant — forward unchanged, do NOT intercept the response.
+					req.Body = io.NopCloser(bytes.NewReader(body))
+					req.ContentLength = int64(len(body))
+					req.Header.Set("Content-Length", strconv.Itoa(len(body)))
+					return req, nil
+				}
+				req.Body = io.NopCloser(bytes.NewReader(newBody))
+				req.ContentLength = int64(len(newBody))
+				req.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+				// Log endpoint only — NEVER the body or any token.
+				logRefreshDiag(stripPort(req.URL.Host), req.URL.Path)
+				ctx.UserData = anthropicRefreshMarker{}
+				return req, nil
+			}
+
 			// Intercept OAuth2 token exchange requests.
 			if cfg.TokenVendor != nil && credentials.IsTokenExchange(req) {
 				if resp := cfg.TokenVendor.HandleTokenExchange(req); resp != nil {
@@ -495,6 +536,39 @@ func New(cfg Config) *http.Server {
 			return req, nil
 		},
 	)
+
+	// Capture the upstream response of an intercepted Anthropic OAuth refresh:
+	// record the rotated real tokens and replace the body with a dummy so the
+	// agent only ever stores dummies.
+	proxy.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+		if resp == nil {
+			return resp
+		}
+		if _, ok := ctx.UserData.(anthropicRefreshMarker); !ok {
+			return resp
+		}
+		if resp.StatusCode != http.StatusOK {
+			// Sanitized passthrough: the agent sees the real failure. No token
+			// rewrite, no token logged.
+			return resp
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return resp
+		}
+		access, refresh, expiresIn, perr := parseRefreshResponse(body)
+		// UpdateFromRefresh keeps the existing refresh token when the response
+		// omits a rotated one (its own refresh != "" guard); we require access != "".
+		if perr == nil && access != "" && cfg.AnthropicInjector != nil {
+			cfg.AnthropicInjector.UpdateFromRefresh(access, refresh, expiresIn)
+		}
+		dummy := buildDummyRefreshResponseBody(expiresIn)
+		resp.Body = io.NopCloser(bytes.NewReader(dummy))
+		resp.ContentLength = int64(len(dummy))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(dummy)))
+		return resp
+	})
 
 	return &http.Server{
 		Addr:              cfg.ListenAddr,

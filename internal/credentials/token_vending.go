@@ -45,8 +45,9 @@ type tokenResponse struct {
 	TokenType   string `json:"token_type"`
 }
 
-// IsTokenExchange returns true if the request is an OAuth2 token exchange
-// to Google's token endpoint.
+// IsTokenExchange returns true if the request is an OAuth2 token exchange to
+// Google's token endpoint. Anthropic's token endpoint is handled separately by
+// IsAnthropicTokenExchange and the refresh-intercept layer.
 func IsTokenExchange(req *http.Request) bool {
 	if req == nil || req.URL == nil {
 		return false
@@ -56,9 +57,31 @@ func IsTokenExchange(req *http.Request) bool {
 	if host == "" {
 		host = req.Host
 	}
-	// Strip port for comparison
+	// Match host with or without the default :443 port suffix.
 	if host == "oauth2.googleapis.com" || host == "oauth2.googleapis.com:443" {
 		return req.Method == http.MethodPost && req.URL.Path == "/token"
+	}
+	return false
+}
+
+// IsAnthropicTokenExchange returns true if the request is an OAuth2 token
+// exchange to Anthropic's token endpoint. The refresh-intercept layer uses this
+// to piggyback on Claude Code's native refresh: it rewrites the request body
+// with the real refresh token and replaces the response body with a dummy.
+func IsAnthropicTokenExchange(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+
+	host := req.URL.Host
+	if host == "" {
+		host = req.Host
+	}
+	// Match host with or without the default :443 port suffix.
+	if host == "console.anthropic.com" || host == "console.anthropic.com:443" ||
+		host == "platform.claude.com" || host == "platform.claude.com:443" {
+		return req.Method == http.MethodPost &&
+			(req.URL.Path == "/v1/oauth/token" || req.URL.Path == "/api/oauth/token")
 	}
 	return false
 }

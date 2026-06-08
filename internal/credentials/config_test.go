@@ -116,8 +116,8 @@ func TestLoadDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
-	if len(cfg.Credentials) != 5 {
-		t.Errorf("default config has %d entries, want 5", len(cfg.Credentials))
+	if len(cfg.Credentials) != 6 {
+		t.Errorf("default config has %d entries, want 6", len(cfg.Credentials))
 	}
 
 	// Verify the expected entries are present
@@ -125,7 +125,7 @@ func TestLoadDefaultConfig(t *testing.T) {
 	for _, entry := range cfg.Credentials {
 		envVars[entry.EnvVar] = true
 	}
-	for _, expected := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
+	for _, expected := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "ANTHROPIC_OAUTH_CREDS_FILE"} {
 		if !envVars[expected] {
 			t.Errorf("default config missing entry for %s", expected)
 		}
@@ -200,10 +200,13 @@ func TestBuildFromConfig_Bearer(t *testing.T) {
 		},
 	}
 
-	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+	store, tokenVendor, domainMap, anthInjector := BuildFromConfig(cfg)
 
 	if tokenVendor != nil {
 		t.Error("tokenVendor should be nil without gcloud entry")
+	}
+	if anthInjector != nil {
+		t.Error("anthInjector should be nil without anthropic_oauth entry")
 	}
 
 	if domains, ok := domainMap["TEST_BEARER_KEY"]; !ok {
@@ -238,7 +241,7 @@ func TestBuildFromConfig_APIKey(t *testing.T) {
 		},
 	}
 
-	store, _, _ := BuildFromConfig(cfg)
+	store, _, _, _ := BuildFromConfig(cfg)
 
 	req := &http.Request{
 		URL:    &url.URL{Host: "api.anthropic.com"},
@@ -265,7 +268,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		},
 	}
 
-	store, _, _ := BuildFromConfig(cfg)
+	store, _, _, _ := BuildFromConfig(cfg)
 
 	req := &http.Request{
 		URL:    &url.URL{Host: "api.github.com"},
@@ -312,7 +315,7 @@ func TestBuildFromConfig_MissingEnvVarSkipped(t *testing.T) {
 		},
 	}
 
-	store, _, domainMap := BuildFromConfig(cfg)
+	store, _, domainMap, _ := BuildFromConfig(cfg)
 
 	if _, ok := domainMap["DEFINITELY_NOT_SET_12345"]; ok {
 		t.Error("domain map should not contain entry for unset env var")
@@ -346,7 +349,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		},
 	}
 
-	store, _, domainMap := BuildFromConfig(cfg)
+	store, _, domainMap, _ := BuildFromConfig(cfg)
 
 	if len(domainMap) != 2 {
 		t.Errorf("domain map has %d entries, want 2", len(domainMap))
@@ -392,7 +395,7 @@ func TestBuildFromConfig_GCloudFromJSON(t *testing.T) {
 		},
 	}
 
-	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+	store, tokenVendor, domainMap, _ := BuildFromConfig(cfg)
 
 	if tokenVendor == nil {
 		t.Fatal("tokenVendor should not be nil when GCP_ADC_JSON is set with valid JSON")
@@ -426,7 +429,7 @@ func TestBuildFromConfig_GCloudJSONPreferredOverFile(t *testing.T) {
 		},
 	}
 
-	store, tokenVendor, _ := BuildFromConfig(cfg)
+	store, tokenVendor, _, _ := BuildFromConfig(cfg)
 
 	if tokenVendor == nil {
 		t.Fatal("tokenVendor should not be nil — GCP_ADC_JSON should be used instead of the nonexistent file")
@@ -457,7 +460,7 @@ func TestBuildFromConfig_GCloudFallbackToFile(t *testing.T) {
 	}
 
 	// File doesn't exist, so gcloud should not be available
-	_, tokenVendor, _ := BuildFromConfig(cfg)
+	_, tokenVendor, _, _ := BuildFromConfig(cfg)
 	if tokenVendor != nil {
 		t.Error("tokenVendor should be nil when ADC file doesn't exist and GCP_ADC_JSON is unset")
 	}
@@ -477,12 +480,117 @@ func TestBuildFromConfig_GCloudSkippedWhenBothUnset(t *testing.T) {
 		},
 	}
 
-	_, tokenVendor, domainMap := BuildFromConfig(cfg)
+	_, tokenVendor, domainMap, _ := BuildFromConfig(cfg)
 	if tokenVendor != nil {
 		t.Error("tokenVendor should be nil when both GCP_ADC_JSON and GOOGLE_APPLICATION_CREDENTIALS are unset")
 	}
 	if _, ok := domainMap["GOOGLE_APPLICATION_CREDENTIALS"]; ok {
 		t.Error("domain map should not contain entry when both env vars are unset")
+	}
+}
+
+func TestAnthropicOAuthConfig_ParseAccepted(t *testing.T) {
+	data := []byte(`{
+		"credentials": [
+			{"env_var": "ANTHROPIC_OAUTH_CREDS_FILE", "injector": "anthropic_oauth", "domains": ["api.anthropic.com", ".claude.ai"]}
+		]
+	}`)
+
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig should accept anthropic_oauth entry: %v", err)
+	}
+	if len(cfg.Credentials) != 1 {
+		t.Fatalf("got %d entries, want 1", len(cfg.Credentials))
+	}
+	if cfg.Credentials[0].InjectorType != "anthropic_oauth" {
+		t.Errorf("injector = %q, want %q", cfg.Credentials[0].InjectorType, "anthropic_oauth")
+	}
+}
+
+func TestAnthropicOAuthConfig_BuildWithCredsFile(t *testing.T) {
+	// Write a minimal credentials file that AnthropicOAuthInjector can load.
+	dir := t.TempDir()
+	credsPath := filepath.Join(dir, ".credentials.json")
+	credsJSON := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x","refreshToken":"sk-ant-ort01-y","expiresAt":4102444800000}}`)
+	if err := os.WriteFile(credsPath, credsJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ANTHROPIC_OAUTH_CREDS_FILE", credsPath)
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "ANTHROPIC_OAUTH_CREDS_FILE",
+				InjectorType: "anthropic_oauth",
+				Domains:      []string{"api.anthropic.com", ".claude.ai"},
+			},
+		},
+	}
+
+	store, tokenVendor, domainMap, anthInjector := BuildFromConfig(cfg)
+
+	if tokenVendor == nil {
+		t.Error("tokenVendor should not be nil when anthropic_oauth creds are available")
+	}
+	if anthInjector == nil {
+		t.Error("anthInjector should not be nil when anthropic_oauth creds are available")
+	}
+	if _, ok := domainMap["ANTHROPIC_OAUTH_CREDS_FILE"]; !ok {
+		t.Error("domain map should contain ANTHROPIC_OAUTH_CREDS_FILE entry")
+	}
+
+	// api.anthropic.com (exact) should match.
+	req := &http.Request{
+		URL:    &url.URL{Host: "api.anthropic.com"},
+		Header: make(http.Header),
+	}
+	if matched, _ := store.InjectCredentials(req); !matched {
+		t.Error("store should route api.anthropic.com with anthropic_oauth injector")
+	}
+
+	// sub.claude.ai (suffix) should match.
+	req2 := &http.Request{
+		URL:    &url.URL{Host: "sub.claude.ai"},
+		Header: make(http.Header),
+	}
+	if matched, _ := store.InjectCredentials(req2); !matched {
+		t.Error("store should route sub.claude.ai with anthropic_oauth injector (suffix .claude.ai)")
+	}
+}
+
+func TestAnthropicOAuthConfig_SkippedWhenEnvVarUnset(t *testing.T) {
+	t.Setenv("ANTHROPIC_OAUTH_CREDS_FILE", "")
+
+	cfg := &CredentialConfig{
+		Credentials: []CredentialEntry{
+			{
+				EnvVar:       "ANTHROPIC_OAUTH_CREDS_FILE",
+				InjectorType: "anthropic_oauth",
+				Domains:      []string{"api.anthropic.com", ".claude.ai"},
+			},
+		},
+	}
+
+	store, tokenVendor, domainMap, anthInjector := BuildFromConfig(cfg)
+
+	if tokenVendor != nil {
+		t.Error("tokenVendor should be nil when ANTHROPIC_OAUTH_CREDS_FILE is unset")
+	}
+	if anthInjector != nil {
+		t.Error("anthInjector should be nil when ANTHROPIC_OAUTH_CREDS_FILE is unset")
+	}
+	if _, ok := domainMap["ANTHROPIC_OAUTH_CREDS_FILE"]; ok {
+		t.Error("domain map should not contain entry when env var is unset")
+	}
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "api.anthropic.com"},
+		Header: make(http.Header),
+	}
+	if matched, _ := store.InjectCredentials(req); matched {
+		t.Error("store should not route api.anthropic.com when env var is unset")
 	}
 }
 
@@ -499,7 +607,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		},
 	}
 
-	store, _, _ := BuildFromConfig(cfg)
+	store, _, _, _ := BuildFromConfig(cfg)
 
 	// Exact match
 	req1 := &http.Request{
