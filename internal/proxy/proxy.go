@@ -18,6 +18,7 @@ import (
 
 	"github.com/bbrowning/paude-proxy/internal/credentials"
 	"github.com/bbrowning/paude-proxy/internal/filter"
+	"github.com/bbrowning/paude-proxy/internal/timeouts"
 )
 
 // PortFilter controls which ports are allowed for HTTP and CONNECT requests.
@@ -326,6 +327,9 @@ func New(cfg Config) *http.Server {
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
+		IdleConnTimeout:       timeouts.IdleConn,
+		TLSHandshakeTimeout:   timeouts.TLSHandshake,
+		ResponseHeaderTimeout: timeouts.ResponseHeader,
 	}
 	if cfg.UpstreamCAs != nil {
 		proxyTransport.TLSClientConfig.RootCAs = cfg.UpstreamCAs

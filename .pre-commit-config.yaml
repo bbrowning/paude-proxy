@@ -14,7 +14,9 @@ repos:
         types: [go]
         pass_filenames: false
 
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v2.11.4
-    hooks:
-      - id: golangci-lint
+  # golangci-lint disabled due to upstream dependency issues (MirrexOne/unqueryvet 403)
+  # Use 'make lint' (go vet) instead
+  # - repo: https://github.com/golangci/golangci-lint
+  #   rev: v2.12.2
+  #   hooks:
+  #     - id: golangci-lint

@@ -747,3 +747,49 @@ func TestIntegration_CredentialInjectionFailure_Returns502(t *testing.T) {
 		t.Errorf("expected injection failure message, got %q", got)
 	}
 }
+
+func TestIntegration_ProxyTransport_ResponseHeaderTimeout(t *testing.T) {
+	skipIntegration(t)
+
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	// Create an upstream server that delays response headers beyond timeout
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(31 * time.Second) // Exceed 30s timeout
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	df := filter.NewDomainFilter(upstreamURL.Hostname())
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, nil, nil, upstreamCAs)
+	defer cleanup()
+
+	// Create client with longer timeout than proxy's ResponseHeaderTimeout (30s)
+	// so we can verify the proxy timeout triggers first
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+	client.Timeout = 60 * time.Second // Override default 5s timeout
+
+	// Request should fail due to ResponseHeaderTimeout before 35s delay completes
+	start := time.Now()
+	_, err = client.Get(upstream.URL + "/test")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// Should timeout around 30s (allow 25-35s margin for CI variance)
+	if elapsed < 25*time.Second || elapsed > 35*time.Second {
+		t.Errorf("timeout at unexpected time: %v (expected ~30s)", elapsed)
+	}
+
+	t.Logf("Request timed out after %v as expected", elapsed)
+}

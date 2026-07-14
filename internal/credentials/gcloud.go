@@ -2,12 +2,15 @@ package credentials
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"sync"
 
+	"github.com/bbrowning/paude-proxy/internal/timeouts"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
@@ -56,10 +59,25 @@ func (g *GCloudInjector) init() error {
 			}
 		}
 
-		// Use context.Background() — this context is stored by the oauth2
-		// library and reused for all token refresh HTTP calls. It must NOT
+		// Custom HTTP client for OAuth2 token refresh. DisableKeepAlives forces
+		// fresh connections (~1/hour refresh rate, so no benefit to pooling).
+		httpClient := &http.Client{
+			Timeout: timeouts.ResponseHeader,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				},
+				TLSHandshakeTimeout:   timeouts.TLSHandshake,
+				ResponseHeaderTimeout: timeouts.ResponseHeader,
+			},
+		}
+
+		// Use context.Background() with custom HTTP client — this context is stored by
+		// the oauth2 library and reused for all token refresh HTTP calls. It must NOT
 		// be canceled or have a short timeout.
-		creds, err := google.CredentialsFromJSON(context.Background(), data, g.scopes...)
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+		creds, err := google.CredentialsFromJSON(ctx, data, g.scopes...)
 		if err != nil {
 			g.initErr = fmt.Errorf("parse ADC credentials: %w", err)
 			return
