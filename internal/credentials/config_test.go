@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseConfig_Valid(t *testing.T) {
@@ -116,8 +117,8 @@ func TestLoadDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
-	if len(cfg.Credentials) != 5 {
-		t.Errorf("default config has %d entries, want 5", len(cfg.Credentials))
+	if len(cfg.Credentials) != 6 {
+		t.Errorf("default config has %d entries, want 6", len(cfg.Credentials))
 	}
 
 	// Verify the expected entries are present
@@ -125,7 +126,7 @@ func TestLoadDefaultConfig(t *testing.T) {
 	for _, entry := range cfg.Credentials {
 		envVars[entry.EnvVar] = true
 	}
-	for _, expected := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
+	for _, expected := range []string{"ANTHROPIC_API_KEY", "CHATGPT_AUTH_FILE", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
 		if !envVars[expected] {
 			t.Errorf("default config missing entry for %s", expected)
 		}
@@ -526,5 +527,43 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 	}
 	if matched, _ := store.InjectCredentials(req3); matched {
 		t.Error("should not match other.com")
+	}
+}
+
+func TestBuildFromConfig_ChatGPT(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	access := testJWT(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
+	id := testJWT(map[string]any{"chatgpt_account_id": "account"})
+	writePrivateAuth(t, authPath, testAuthJSON(access, "refresh", id, ""))
+	t.Setenv("CHATGPT_AUTH_FILE", authPath)
+	t.Setenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE", filepath.Join(dir, "state", "auth.json"))
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "CHATGPT_AUTH_FILE",
+			InjectorType: "chatgpt",
+			Params:       map[string]string{"path_prefix": "/backend-api/codex"},
+			Domains:      []string{"chatgpt.com"},
+		},
+	}}
+	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+	if tokenVendor == nil {
+		t.Fatal("ChatGPT token vendor should be enabled")
+	}
+	if got := domainMap["CHATGPT_AUTH_FILE"]; len(got) != 2 || got[1] != "auth.openai.com" {
+		t.Errorf("ChatGPT domain map = %v, want API and OAuth domains", got)
+	}
+
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "chatgpt.com", Path: "/backend-api/codex/responses"},
+		Header: make(http.Header),
+	}
+	if matched, injected := store.InjectCredentials(req); !matched || !injected {
+		t.Fatal("ChatGPT route should inject")
+	}
+	if req.Header.Get("ChatGPT-Account-ID") != "account" {
+		t.Error("ChatGPT route did not inject account ID")
 	}
 }

@@ -171,6 +171,7 @@ This prevents other containers or processes on the network from using the proxy 
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `*.anthropic.com` | `x-api-key: <key>` |
 | `OPENAI_API_KEY` | `*.openai.com` | `Authorization: Bearer <key>` |
+| `CHATGPT_AUTH_FILE` | `chatgpt.com/backend-api/codex/...` | `Authorization` and `ChatGPT-Account-ID` |
 | `CURSOR_API_KEY` | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` |
 | `GH_TOKEN` | `github.com`, `api.github.com`, `*.githubusercontent.com` | `Authorization: Bearer <pat>` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `*.googleapis.com` | `Authorization: Bearer <token>` (auto-refreshed OAuth2) |
@@ -247,6 +248,7 @@ The config file maps environment variables to injector types and domain patterns
 | `bearer` | Sets `Authorization: Bearer <value>` | — |
 | `api_key` | Sets a custom header with the credential value | `header_name` |
 | `gcloud` | OAuth2 Bearer token from ADC (auto-refreshed); also enables token vending | — |
+| `chatgpt` | Codex ChatGPT OAuth (auto-refreshed); enables synthetic token vending | `path_prefix` (normally `/backend-api/codex`) |
 
 **Domain patterns:** Prefix with `.` for wildcard suffix matching (`.openai.com` matches `api.openai.com`). Without a prefix, matches exactly (`github.com` matches only `github.com`).
 
@@ -262,6 +264,14 @@ For Google Cloud APIs, the proxy uses a two-step approach:
 2. **Credential injection**: When the client calls `*.googleapis.com` with the dummy Bearer token, the proxy replaces it with a real OAuth2 token from its own ADC.
 
 The client never sees any real credential — not the refresh token, not even a short-lived access token.
+
+### ChatGPT plan authentication (Codex)
+
+Set `CHATGPT_AUTH_FILE` to a private, read-only Codex-compatible auth JSON file. The proxy accepts the current `auth_mode: "chatgpt"` format with `tokens.access_token`, `tokens.refresh_token`, and either `tokens.account_id` or the ChatGPT account claim in `tokens.id_token`. It refreshes through `https://auth.openai.com/oauth/token` and injects `Authorization` plus `ChatGPT-Account-ID` only for `chatgpt.com/backend-api/codex/...` requests.
+
+Set `PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE` to a proxy-only writable path if refresh-token rotation must survive proxy recreation. The proxy creates the containing directory with mode `0700`, writes state files with mode `0600`, and atomically replaces them. The source auth file must be owner-readable only (`0400` or `0600`). Never mount either file into the agent container.
+
+The agent should receive a synthetic Codex auth file containing dummy access, refresh, ID, and account values. The proxy intercepts only `POST https://auth.openai.com/oauth/token` and returns synthetic OAuth values; it never returns the real tokens.
 
 ## Building
 

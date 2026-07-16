@@ -12,6 +12,8 @@ Squid is a passthrough proxy — it filters domains but never sees HTTPS request
 
 3. **gcloud ADC needs a stub file in the agent.** Instead of giving the agent real ADC credentials, the agent gets a stub ADC JSON file with dummy values. The proxy handles real token refresh.
 
+4. **Codex ChatGPT authentication needs a synthetic auth file in the agent.** The real Codex auth JSON is mounted only into the proxy. The agent receives dummy ChatGPT auth state and the proxy handles refresh and request injection.
+
 ## Changes needed in paude
 
 ### 1. Proxy image reference
@@ -110,7 +112,38 @@ The real ADC file must be mounted/injected into the **proxy** container instead,
 
 **How it works:** The agent's Google Auth library reads the stub, POSTs to `oauth2.googleapis.com/token` to exchange the dummy refresh_token. The proxy intercepts this request and returns a dummy access token. The agent uses this dummy token in API calls. The proxy's `GCloudInjector` replaces the dummy Bearer header with a real token (from the proxy's own ADC) before forwarding to Google. The agent never sees any real credential.
 
-### 5. Source IP filtering and network isolation
+### 5. Codex ChatGPT OAuth
+
+The proxy-side input is a file path, not an environment variable containing the auth JSON:
+
+- `CHATGPT_AUTH_FILE` points to the real Codex auth file mounted only in the proxy container.
+- `PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE` points to a proxy-only writable state file, for example `/data/auth/chatgpt-auth.json`.
+- The source file must be mounted owner-readable only (`0400` or `0600`). The proxy creates the state directory as `0700` and state files as `0600`, writes rotated state atomically, and never logs file contents.
+- The state volume must not be mounted into the agent container. The proxy does not delete state during shutdown; paude deletes the session state volume when the session ends.
+
+The source JSON must be current Codex-compatible ChatGPT state, including `auth_mode: "chatgpt"` and a `tokens` object containing `access_token`, `refresh_token`, and `id_token` and/or `account_id`. The account ID is taken from `tokens.account_id`, or from the ChatGPT account claim in `tokens.id_token`.
+
+The proxy refreshes at `https://auth.openai.com/oauth/token` using the Codex OAuth client and refreshes five minutes before access-token expiry. Rotated refresh tokens are persisted. If refresh or persistence fails, the proxy fails closed and does not inject a credential.
+
+The credential route is exact `chatgpt.com` with path prefix `/backend-api/codex`. It replaces both `Authorization` and `ChatGPT-Account-ID` and preserves other headers. The required allowlist domains are `chatgpt.com` and `auth.openai.com`; the existing static `OPENAI_API_KEY` route remains available for ordinary API-key requests.
+
+The agent receives synthetic Codex auth state at its `$CODEX_HOME/auth.json`:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "<JWT-shaped synthetic ID token>",
+    "access_token": "paude-proxy-managed-access",
+    "refresh_token": "paude-proxy-managed-refresh",
+    "account_id": "paude-proxy-managed-account"
+  }
+}
+```
+
+The proxy intercepts only `POST https://auth.openai.com/oauth/token` and returns synthetic access, refresh, and ID tokens. The real access and refresh tokens are never returned to the agent.
+
+### 6. Source IP filtering and network isolation
 
 paude-proxy supports optional source IP filtering (`PAUDE_PROXY_ALLOWED_CLIENTS`) to restrict which clients can connect. This provides defense-in-depth alongside network isolation.
 
@@ -173,6 +206,8 @@ Mount `/data/ca` as a named volume so the CA persists across restarts.
 | `CURSOR_API_KEY` | Real API key from host | **NEW** — move from agent |
 | `GH_TOKEN` | Real GitHub PAT from host | **NEW** — move from agent |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to real ADC JSON | **NEW** — mount file + set path |
+| `CHATGPT_AUTH_FILE` | Path to real Codex auth JSON | **NEW** — private read-only mount |
+| `PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE` | `/data/auth/chatgpt-auth.json` | **NEW** — proxy-only private writable state |
 | `PAUDE_PROXY_ALLOWED_CLIENTS` | Agent container IP (e.g., `10.89.0.5`) | **NEW** — optional, for defense-in-depth |
 | `PAUDE_PROXY_VERBOSE` | `1` for debug logging | Optional |
 
@@ -185,6 +220,7 @@ Mount `/data/ca` as a named volume so the CA persists across restarts.
 | `CURSOR_API_KEY` | `paude-proxy-managed` | **CHANGED** — was real key |
 | `GH_TOKEN` | `paude-proxy-managed` | **CHANGED** — was real key |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to stub ADC JSON | **CHANGED** — stub, not real |
+| `CODEX_HOME` | Directory containing synthetic `auth.json` | **NEW** — dummy ChatGPT auth only |
 | `NODE_EXTRA_CA_CERTS` | `/etc/pki/ca-trust/source/anchors/paude-proxy-ca.crt` | **NEW** |
 | `REQUESTS_CA_BUNDLE` | `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` | **NEW** |
 | `SSL_CERT_FILE` | `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` | **NEW** |

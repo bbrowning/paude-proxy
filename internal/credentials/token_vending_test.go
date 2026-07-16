@@ -71,6 +71,7 @@ func TestHandleTokenExchange_ValidRequest(t *testing.T) {
 	tv := NewTokenVendor()
 
 	req := &http.Request{
+		Method: http.MethodPost,
 		URL: &url.URL{
 			Host: "oauth2.googleapis.com",
 			Path: "/token",
