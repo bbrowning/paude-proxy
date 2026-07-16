@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -44,6 +45,32 @@ func writePrivateAuth(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type chatGPTTokenTransport struct {
+	base     http.RoundTripper
+	endpoint *url.URL
+}
+
+func (t chatGPTTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.String() != chatGPTTokenURL {
+		return nil, errors.New("ChatGPT refresh used an unexpected token endpoint")
+	}
+	clone := req.Clone(req.Context())
+	clone.URL = t.endpoint
+	clone.Host = t.endpoint.Host
+	return t.base.RoundTrip(clone)
+}
+
+func chatGPTTestClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Transport = chatGPTTokenTransport{base: client.Transport, endpoint: endpoint}
+	return client
 }
 
 func TestChatGPTAuthParsingAndAccountIDExtraction(t *testing.T) {
@@ -137,8 +164,7 @@ func TestChatGPTRefreshRotationAndPersistence(t *testing.T) {
 	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
 		AuthPath:   authPath,
 		StatePath:  statePath,
-		TokenURL:   server.URL,
-		HTTPClient: server.Client(),
+		HTTPClient: chatGPTTestClient(t, server),
 		Now:        func() time.Time { return now },
 	})
 	req := &http.Request{Header: make(http.Header)}
@@ -191,8 +217,7 @@ func TestChatGPTRefreshFailureFailsClosedWithoutLeakingResponse(t *testing.T) {
 
 	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
 		AuthPath:   authPath,
-		TokenURL:   server.URL,
-		HTTPClient: server.Client(),
+		HTTPClient: chatGPTTestClient(t, server),
 		Now:        time.Now,
 	})
 	req := &http.Request{Header: make(http.Header)}
@@ -225,8 +250,7 @@ func TestChatGPTConcurrentRefreshesOnlyOnce(t *testing.T) {
 
 	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
 		AuthPath:   authPath,
-		TokenURL:   server.URL,
-		HTTPClient: server.Client(),
+		HTTPClient: chatGPTTestClient(t, server),
 		Now:        func() time.Time { return now },
 	})
 	var wg sync.WaitGroup

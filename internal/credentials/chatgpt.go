@@ -28,12 +28,11 @@ const (
 )
 
 // ChatGPTOAuthConfig contains the proxy-side locations and HTTP settings for
-// ChatGPT OAuth. TokenURL, HTTPClient, Now, and RefreshWindow are injectable
-// for tests; production callers should leave them empty.
+// ChatGPT OAuth. HTTPClient, Now, and RefreshWindow are injectable for tests;
+// production callers should leave them empty.
 type ChatGPTOAuthConfig struct {
 	AuthPath      string
 	StatePath     string
-	TokenURL      string
 	ClientID      string
 	HTTPClient    *http.Client
 	Now           func() time.Time
@@ -75,9 +74,6 @@ func NewChatGPTInjector(authPath, statePath string) *ChatGPTInjector {
 
 // NewChatGPTInjectorWithConfig creates an injector with explicit settings.
 func NewChatGPTInjectorWithConfig(config ChatGPTOAuthConfig) *ChatGPTInjector {
-	if config.TokenURL == "" {
-		config.TokenURL = chatGPTTokenURL
-	}
 	if config.ClientID == "" {
 		config.ClientID = chatGPTClientID
 	}
@@ -232,7 +228,7 @@ func (c *ChatGPTInjector) refreshLocked() error {
 		"refresh_token": {c.document.tokens.RefreshToken},
 		"client_id":     {c.config.ClientID},
 	}
-	req, err := http.NewRequest(http.MethodPost, c.config.TokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, chatGPTTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return errors.New("construct refresh request")
 	}

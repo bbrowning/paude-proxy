@@ -28,6 +28,29 @@ func skipIntegration(t *testing.T) {
 	}
 }
 
+type chatGPTTokenTransport struct {
+	base     http.RoundTripper
+	endpoint *url.URL
+}
+
+func (t chatGPTTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL = t.endpoint
+	clone.Host = t.endpoint.Host
+	return t.base.RoundTrip(clone)
+}
+
+func chatGPTTestClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Transport = chatGPTTokenTransport{base: client.Transport, endpoint: endpoint}
+	return client
+}
+
 // startTestProxy creates a proxy with the given config and returns its URL and a cleanup func.
 func startTestProxy(t *testing.T, ca *CA, domainFilter *filter.DomainFilter, credStore *credentials.Store, tokenVendor *credentials.TokenVendor, upstreamCAs *x509.CertPool) (proxyURL string, cleanup func()) {
 	return startTestProxyWithConfig(t, Config{
@@ -513,8 +536,7 @@ func TestIntegration_ChatGPTOAuthProxyFlow(t *testing.T) {
 	primaryURL, _ := url.Parse(primary.URL)
 	injector := credentials.NewChatGPTInjectorWithConfig(credentials.ChatGPTOAuthConfig{
 		AuthPath:   authPath,
-		TokenURL:   refreshServer.URL,
-		HTTPClient: refreshServer.Client(),
+		HTTPClient: chatGPTTestClient(t, refreshServer),
 		Now:        func() time.Time { return now },
 	})
 	store := credentials.NewStore()
