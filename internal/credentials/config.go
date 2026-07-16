@@ -23,7 +23,7 @@ type CredentialEntry struct {
 	// EnvVar is the environment variable name to read the credential from.
 	EnvVar string `json:"env_var"`
 
-	// InjectorType is one of: "bearer", "api_key", "gcloud".
+	// InjectorType is one of: "bearer", "api_key", "gcloud", "chatgpt".
 	InjectorType string `json:"injector"`
 
 	// Params holds injector-specific parameters (e.g., "header_name" for api_key).
@@ -39,6 +39,7 @@ var validInjectorTypes = map[string]bool{
 	"bearer":  true,
 	"api_key": true,
 	"gcloud":  true,
+	"chatgpt": true,
 }
 
 // ParseConfig parses and validates a credential config from JSON bytes.
@@ -53,7 +54,7 @@ func ParseConfig(data []byte) (*CredentialConfig, error) {
 			return nil, fmt.Errorf("credential entry %d: env_var is required", i)
 		}
 		if !validInjectorTypes[entry.InjectorType] {
-			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud)", i, entry.EnvVar, entry.InjectorType)
+			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud, chatgpt)", i, entry.EnvVar, entry.InjectorType)
 		}
 		if len(entry.Domains) == 0 {
 			return nil, fmt.Errorf("credential entry %d (%s): at least one domain is required", i, entry.EnvVar)
@@ -89,7 +90,7 @@ func LoadDefaultConfig() (*CredentialConfig, error) {
 
 // BuildFromConfig creates a credential Store and optional TokenVendor from
 // a parsed config. It reads credential values from environment variables.
-// Returns the store, token vendor (nil if no gcloud entry), and a map of
+// Returns the store, token vendor (nil if no OAuth credential entry), and a map of
 // env var names to their domain lists (for domain filter validation).
 func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]string) {
 	store := NewStore()
@@ -138,18 +139,35 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 				continue
 			}
 			injector = gcloudInjector
-			tokenVendor = NewTokenVendor()
+			tokenVendor = ensureTokenVendor(tokenVendor)
+			tokenVendor.googleEnabled = true
 			log.Println("Token vendor: ENABLED (returns dummy tokens for oauth2.googleapis.com/token)")
+		case "chatgpt":
+			chatGPTInjector := NewChatGPTInjector(value, os.Getenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE"))
+			if !chatGPTInjector.Available() {
+				log.Printf("WARN: %s auth file is not loadable", entry.EnvVar)
+				continue
+			}
+			injector = chatGPTInjector
+			tokenVendor = ensureTokenVendor(tokenVendor)
+			tokenVendor.chatGPTEnabled = true
+			log.Println("Token vendor: ENABLED (returns dummy tokens for auth.openai.com/oauth/token)")
 		}
 
 		for _, domain := range entry.Domains {
-			route := Route{Injector: injector}
+			route := Route{Injector: injector, PathPrefix: entry.Params["path_prefix"]}
 			if strings.HasPrefix(domain, ".") {
 				route.DomainSuffix = domain
 			} else {
 				route.ExactDomain = domain
 			}
 			store.AddRoute(route)
+		}
+
+		if entry.InjectorType == "chatgpt" {
+			// Token vending is a separate route and must also be allowed by the
+			// proxy's domain allowlist.
+			domainMap[entry.EnvVar] = append(domainMap[entry.EnvVar], "auth.openai.com")
 		}
 
 		domainDesc := formatDomains(entry.Domains)
@@ -184,7 +202,16 @@ func injectorDescription(entry CredentialEntry) string {
 		return entry.Params["header_name"]
 	case "gcloud":
 		return "gcloud ADC Bearer token"
+	case "chatgpt":
+		return "ChatGPT OAuth Bearer token"
 	default:
 		return entry.InjectorType
 	}
+}
+
+func ensureTokenVendor(vendor *TokenVendor) *TokenVendor {
+	if vendor == nil {
+		return &TokenVendor{}
+	}
+	return vendor
 }

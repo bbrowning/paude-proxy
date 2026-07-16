@@ -1,14 +1,18 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -478,6 +482,107 @@ func TestIntegration_TokenVending(t *testing.T) {
 	if resp.StatusCode != http.StatusTeapot {
 		t.Logf("Token vendor did not intercept (expected for local server), status: %d", resp.StatusCode)
 	}
+}
+
+func TestIntegration_ChatGPTOAuthProxyFlow(t *testing.T) {
+	skipIntegration(t)
+	dir := t.TempDir()
+	now := time.Unix(1_700_000_000, 0)
+	oldAccess := testProxyJWT(map[string]any{"exp": now.Add(-time.Minute).Unix()})
+	newAccess := testProxyJWT(map[string]any{"exp": now.Add(time.Hour).Unix()})
+	idToken := testProxyJWT(map[string]any{"chatgpt_account_id": "real-account"})
+	authPath := filepath.Join(dir, "auth.json")
+	authData := []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"` + oldAccess + `","refresh_token":"real-refresh","id_token":"` + idToken + `"}}`)
+	if err := os.WriteFile(authPath, authData, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"`+newAccess+`","refresh_token":"rotated-refresh","expires_in":3600}`)
+	}))
+	defer refreshServer.Close()
+
+	var primaryHeaders http.Header
+	primary := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer primary.Close()
+	primaryURL, _ := url.Parse(primary.URL)
+	injector := credentials.NewChatGPTInjectorWithConfig(credentials.ChatGPTOAuthConfig{
+		AuthPath:   authPath,
+		TokenURL:   refreshServer.URL,
+		HTTPClient: refreshServer.Client(),
+		Now:        func() time.Time { return now },
+	})
+	store := credentials.NewStore()
+	store.AddRoute(credentials.Route{
+		ExactDomain: primaryURL.Hostname(),
+		PathPrefix:  "/backend-api/codex",
+		Injector:    injector,
+	})
+	df := filter.NewDomainFilter(primaryURL.Hostname() + ",auth.openai.com")
+	pool := upstreamCertPool(t, primary)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, credentials.NewChatGPTTokenVendor(), pool)
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, primary.Certificate())
+
+	req, _ := http.NewRequest(http.MethodPost, primary.URL+"/backend-api/codex/responses", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer agent-dummy")
+	req.Header.Set("ChatGPT-Account-ID", "agent-dummy-account")
+	req.Header.Set("X-Unrelated", "keep")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("ChatGPT API request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ChatGPT API status = %d, want 200", resp.StatusCode)
+	}
+	if primaryHeaders.Get("Authorization") != "Bearer "+newAccess {
+		t.Error("upstream did not receive the refreshed access token")
+	}
+	if primaryHeaders.Get("ChatGPT-Account-ID") != "real-account" {
+		t.Error("upstream did not receive the proxy-managed account ID")
+	}
+	if primaryHeaders.Get("X-Unrelated") != "keep" {
+		t.Error("unrelated request header was not preserved")
+	}
+
+	tokenReq, _ := http.NewRequest(http.MethodPost, "http://auth.openai.com/oauth/token", strings.NewReader("refresh_token=agent-dummy"))
+	tokenResp, err := client.Do(tokenReq)
+	if err != nil {
+		t.Fatalf("dummy token exchange failed: %v", err)
+	}
+	tokenBody, _ := io.ReadAll(tokenResp.Body)
+	_ = tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusOK || !bytes.Contains(tokenBody, []byte("paude-proxy-managed-access")) || bytes.Contains(tokenBody, []byte("real-refresh")) {
+		t.Error("agent token exchange did not receive only synthetic credentials")
+	}
+
+	unrelatedReq, _ := http.NewRequest(http.MethodPost, primary.URL+"/unrelated/responses", strings.NewReader("{}"))
+	unrelatedReq.Header.Set("Authorization", "Bearer agent-dummy")
+	unrelatedReq.Header.Set("ChatGPT-Account-ID", "agent-dummy-account")
+	unrelatedResp, err := client.Do(unrelatedReq)
+	if err != nil {
+		t.Fatalf("unrelated request failed: %v", err)
+	}
+	_ = unrelatedResp.Body.Close()
+	if primaryHeaders.Get("Authorization") != "Bearer agent-dummy" || primaryHeaders.Get("ChatGPT-Account-ID") != "agent-dummy-account" {
+		t.Error("ChatGPT credentials leaked to an unrelated domain")
+	}
+}
+
+func testProxyJWT(claims map[string]any) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload, _ := json.Marshal(claims)
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
 
 func TestIntegration_ClientFilter_AllowedIP(t *testing.T) {

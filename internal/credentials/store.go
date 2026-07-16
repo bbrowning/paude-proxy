@@ -26,6 +26,15 @@ type Route struct {
 
 	// Injector to use when this route matches.
 	Injector Injector
+
+	// PathPrefix optionally restricts this route to a path prefix. A prefix
+	// ending in "/" matches all descendants; otherwise the prefix must be
+	// followed by "/" or be an exact path.
+	PathPrefix string
+
+	// Methods optionally restricts this route to HTTP methods. An empty map
+	// allows every method.
+	Methods map[string]bool
 }
 
 // Store holds credential routes and matches requests to injectors.
@@ -68,11 +77,13 @@ func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
 	for _, route := range s.routes {
 		matched := false
 		matchedPattern := ""
+		pathMatched := route.PathPrefix == "" || pathMatchesPrefix(req.URL.Path, route.PathPrefix)
+		methodMatched := len(route.Methods) == 0 || route.Methods[strings.ToUpper(req.Method)]
 
-		if route.ExactDomain != "" && host == route.ExactDomain {
+		if pathMatched && methodMatched && route.ExactDomain != "" && host == route.ExactDomain {
 			matched = true
 			matchedPattern = route.ExactDomain
-		} else if route.DomainSuffix != "" && strings.HasSuffix(host, route.DomainSuffix) {
+		} else if pathMatched && methodMatched && route.DomainSuffix != "" && strings.HasSuffix(host, route.DomainSuffix) {
 			matched = true
 			matchedPattern = "*" + route.DomainSuffix
 		}
@@ -89,4 +100,14 @@ func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
 	}
 
 	return false, false
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	if path == prefix {
+		return true
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(path, prefix)
+	}
+	return strings.HasPrefix(path, prefix+"/")
 }
