@@ -155,7 +155,7 @@ func TestChatGPTTokenVendor_LoginExchange_ForwardsAndPersists(t *testing.T) {
 			t.Error("disallowed parameter 'scope' was not stripped")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  realAccess,
 			"refresh_token": "real-refresh",
 			"id_token":      testJWT(map[string]any{"chatgpt_account_id": "real-account"}),
@@ -224,7 +224,7 @@ func TestChatGPTTokenVendor_LoginExchange_UpstreamError_PassesThrough(t *testing
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error":             "authorization_pending",
 			"error_description": "The user has not yet completed authorization",
 		})

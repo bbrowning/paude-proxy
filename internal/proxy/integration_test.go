@@ -944,7 +944,7 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 				t.Error("disallowed parameter 'scope' was not stripped by proxy")
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"access_token":  realAccess,
 				"refresh_token": "login-refresh",
 				"id_token":      realID,
