@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -50,6 +51,48 @@ func NewTokenVendor() *TokenVendor {
 // persisted via the injector; refresh requests return synthetic values only.
 func NewChatGPTTokenVendor(injector *ChatGPTInjector) *TokenVendor {
 	return &TokenVendor{chatGPTEnabled: true, chatGPTInjector: injector}
+}
+
+var allowedLoginParams = map[string][]string{
+	"authorization_code": {
+		"grant_type", "code", "redirect_uri", "client_id", "code_verifier",
+	},
+	"urn:ietf:params:oauth:grant-type:device_code": {
+		"grant_type", "device_code", "client_id",
+	},
+	"urn:ietf:params:oauth:grant-type:token-exchange": {
+		"grant_type", "client_id", "requested_token", "subject_token", "subject_token_type",
+	},
+}
+
+func sanitizeLoginForm(agentValues url.Values, clientID string) (url.Values, error) {
+	grantType := agentValues.Get("grant_type")
+	if grantType == "" {
+		return nil, fmt.Errorf("missing grant_type")
+	}
+	allowed, known := allowedLoginParams[grantType]
+	if !known {
+		return nil, fmt.Errorf("unsupported grant_type %q", grantType)
+	}
+
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	for key := range agentValues {
+		if !allowedSet[key] {
+			log.Printf("LOGIN_SANITIZE stripped disallowed parameter %q from %s grant", key, grantType)
+		}
+	}
+
+	sanitized := make(url.Values, len(allowed))
+	for _, param := range allowed {
+		if v := agentValues.Get(param); v != "" {
+			sanitized.Set(param, v)
+		}
+	}
+	sanitized.Set("client_id", clientID)
+	return sanitized, nil
 }
 
 // tokenResponse covers the OAuth fields needed by Google Auth and Codex.
@@ -115,14 +158,17 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 			return errorResponse(http.StatusBadRequest, "Failed to read request body")
 		}
 
-		values, _ := url.ParseQuery(string(bodyBytes))
+		values, err := url.ParseQuery(string(bodyBytes))
+		if err != nil {
+			return errorResponse(http.StatusBadRequest, "Malformed form body")
+		}
 		grantType := values.Get("grant_type")
 
 		if grantType == "refresh_token" {
 			log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
 			return syntheticChatGPTResponse(req)
 		}
-		return tv.handleLoginExchange(req, bodyBytes)
+		return tv.handleLoginExchange(req, values)
 	} else {
 		return nil
 	}
@@ -146,13 +192,19 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	}
 }
 
-func (tv *TokenVendor) handleLoginExchange(req *http.Request, bodyBytes []byte) *http.Response {
+func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Values) *http.Response {
 	if tv.chatGPTInjector == nil {
 		log.Printf("ERROR login exchange: no ChatGPT injector configured")
 		return errorResponse(http.StatusInternalServerError, "Internal proxy error")
 	}
 
-	forwardReq, err := http.NewRequest(http.MethodPost, chatGPTTokenURL, bytes.NewReader(bodyBytes))
+	sanitized, err := sanitizeLoginForm(agentValues, tv.chatGPTInjector.config.ClientID)
+	if err != nil {
+		log.Printf("LOGIN_SANITIZE rejected request: %v", err)
+		return errorResponse(http.StatusBadRequest, "Invalid login exchange request")
+	}
+
+	forwardReq, err := http.NewRequest(http.MethodPost, chatGPTTokenURL, strings.NewReader(sanitized.Encode()))
 	if err != nil {
 		log.Printf("ERROR login exchange: construct forward request")
 		return errorResponse(http.StatusInternalServerError, "Internal proxy error")

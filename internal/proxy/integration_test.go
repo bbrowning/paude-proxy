@@ -934,9 +934,15 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 
 	loginServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		values, _ := url.Parse("?" + string(body))
-		gt := values.Query().Get("grant_type")
+		vals, _ := url.ParseQuery(string(body))
+		gt := vals.Get("grant_type")
 		if gt == "urn:ietf:params:oauth:grant-type:device_code" {
+			if vals.Get("audience") != "" {
+				t.Error("disallowed parameter 'audience' was not stripped by proxy")
+			}
+			if vals.Get("scope") != "" {
+				t.Error("disallowed parameter 'scope' was not stripped by proxy")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
 				"access_token":  realAccess,
@@ -992,9 +998,9 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 		t.Fatalf("pre-login status = %d, want 502", preLoginResp.StatusCode)
 	}
 
-	// Simulate codex login device-code exchange
+	// Simulate codex login device-code exchange (with extra params that should be stripped)
 	loginReq, _ := http.NewRequest(http.MethodPost, "http://auth.openai.com/oauth/token",
-		strings.NewReader("grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test-code"))
+		strings.NewReader("grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test-code&audience=evil&scope=admin"))
 	loginResp, err := client.Do(loginReq)
 	if err != nil {
 		t.Fatalf("login exchange failed: %v", err)
