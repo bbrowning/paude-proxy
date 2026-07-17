@@ -1036,3 +1036,37 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 		t.Error("upstream did not receive the login account ID")
 	}
 }
+
+func TestIntegration_ChatGPTLoginSanitizeReject_HTTPS(t *testing.T) {
+	skipIntegration(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+
+	injector := credentials.NewChatGPTInjectorWithConfig(credentials.ChatGPTOAuthConfig{
+		StatePath: statePath,
+	})
+	store := credentials.NewStore()
+	df := filter.NewDomainFilter("auth.openai.com")
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, credentials.NewChatGPTTokenVendor(injector), nil)
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
+
+	// Send a malformed login request (missing grant_type) via HTTPS.
+	// Before the fix, this panicked with a nil pointer dereference in
+	// goproxy's handleHttps because errorResponse didn't set resp.Request.
+	loginReq, _ := http.NewRequest(http.MethodPost, "https://auth.openai.com/oauth/token",
+		strings.NewReader("code=test-code&client_id=test"))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(loginReq)
+	if err != nil {
+		t.Fatalf("request failed (proxy may have panicked): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
