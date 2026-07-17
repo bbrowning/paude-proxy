@@ -204,7 +204,7 @@ func TestChatGPTTokenVendor_LoginExchange_ForwardsAndPersists(t *testing.T) {
 	}
 
 	injectReq := &http.Request{Header: make(http.Header)}
-	if !injector.Inject(injectReq) {
+	if injector.Inject(injectReq) != InjectOK {
 		t.Fatal("Inject should succeed after login exchange")
 	}
 	if injectReq.Header.Get("Authorization") != "Bearer "+realAccess {

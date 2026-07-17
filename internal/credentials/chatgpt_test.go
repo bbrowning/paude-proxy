@@ -86,7 +86,7 @@ func TestChatGPTAuthParsingAndAccountIDExtraction(t *testing.T) {
 
 	injector := NewChatGPTInjector(path, "")
 	req := &http.Request{Header: make(http.Header)}
-	if !injector.Inject(req) {
+	if injector.Inject(req) != InjectOK {
 		t.Fatal("valid ChatGPT auth should inject")
 	}
 	if req.Header.Get("Authorization") != "Bearer "+access {
@@ -168,7 +168,7 @@ func TestChatGPTRefreshRotationAndPersistence(t *testing.T) {
 		Now:        func() time.Time { return now },
 	})
 	req := &http.Request{Header: make(http.Header)}
-	if !injector.Inject(req) {
+	if injector.Inject(req) != InjectOK {
 		t.Fatal("refresh should succeed")
 	}
 	if receivedRefresh != "old-refresh" {
@@ -222,7 +222,7 @@ func TestChatGPTRefreshFailureFailsClosedWithoutLeakingResponse(t *testing.T) {
 	})
 	req := &http.Request{Header: make(http.Header)}
 	req.Header.Set("Authorization", "Bearer agent-dummy")
-	if injector.Inject(req) {
+	if injector.Inject(req) == InjectOK {
 		t.Fatal("refresh failure must fail closed")
 	}
 	if req.Header.Get("Authorization") != "Bearer agent-dummy" {
@@ -259,7 +259,7 @@ func TestChatGPTConcurrentRefreshesOnlyOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			req := &http.Request{Header: make(http.Header)}
-			if !injector.Inject(req) {
+			if injector.Inject(req) != InjectOK {
 				t.Error("concurrent injection failed")
 			}
 		}()
@@ -282,8 +282,7 @@ func TestChatGPTRouteAndHeaderIsolation(t *testing.T) {
 	allowed := &http.Request{Method: http.MethodPost, URL: &url.URL{Host: "chatgpt.com", Path: "/backend-api/codex/responses"}, Header: make(http.Header)}
 	allowed.Header.Set("Authorization", "Bearer agent-dummy")
 	allowed.Header.Set("X-Unrelated", "preserve")
-	matched, injected := store.InjectCredentials(allowed)
-	if !matched || !injected || allowed.Header.Get("Authorization") != "Bearer real" || allowed.Header.Get("X-Unrelated") != "preserve" {
+	if result := store.InjectCredentials(allowed); result != InjectOK || allowed.Header.Get("Authorization") != "Bearer real" || allowed.Header.Get("X-Unrelated") != "preserve" {
 		t.Error("ChatGPT route did not isolate and override the intended header")
 	}
 
@@ -292,7 +291,7 @@ func TestChatGPTRouteAndHeaderIsolation(t *testing.T) {
 		{Method: http.MethodPost, URL: &url.URL{Host: "evil-chatgpt.com", Path: "/backend-api/codex/responses"}, Header: make(http.Header)},
 		{Method: http.MethodPost, URL: &url.URL{Host: "chatgpt.com", Path: "/v1/responses"}, Header: make(http.Header)},
 	} {
-		if matched, _ := store.InjectCredentials(req); matched {
+		if result := store.InjectCredentials(req); result != InjectNoMatch {
 			t.Error("isolated ChatGPT route matched an unintended request")
 		}
 	}
@@ -334,11 +333,38 @@ func TestChatGPTStatePathOnly_NoFileYet(t *testing.T) {
 
 	req := &http.Request{Header: make(http.Header)}
 	req.Header.Set("Authorization", "Bearer agent-dummy")
-	if injector.Inject(req) {
-		t.Error("Inject should return false when no tokens are loaded yet")
+	if injector.Inject(req) == InjectOK {
+		t.Error("Inject should not succeed when no tokens are loaded yet")
 	}
 	if req.Header.Get("Authorization") != "Bearer agent-dummy" {
 		t.Error("failed injection should not modify the agent header")
+	}
+}
+
+func TestChatGPTInject_LogsWhenNoTokensLoaded(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+
+	injector := NewChatGPTInjector("", statePath)
+	if !injector.Available() {
+		t.Fatal("StatePath-only injector should be available even before login completes")
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousWriter)
+
+	req := &http.Request{Header: make(http.Header)}
+	if injector.Inject(req) == InjectOK {
+		t.Error("Inject should not succeed when no tokens are loaded")
+	}
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "no tokens loaded") {
+		t.Errorf("expected 'no tokens loaded' in log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "login may be required") {
+		t.Errorf("expected 'login may be required' in log, got: %s", logOutput)
 	}
 }
 
@@ -354,7 +380,7 @@ func TestChatGPTStatePathOnly_FileExists(t *testing.T) {
 	}
 
 	req := &http.Request{Header: make(http.Header)}
-	if !injector.Inject(req) {
+	if injector.Inject(req) != InjectOK {
 		t.Fatal("Inject should succeed when StatePath has valid tokens")
 	}
 	if req.Header.Get("Authorization") != "Bearer "+access {
@@ -383,8 +409,8 @@ func TestChatGPTAcceptLoginTokens(t *testing.T) {
 		t.Fatal("StatePath-only injector should be available")
 	}
 	req := &http.Request{Header: make(http.Header)}
-	if injector.Inject(req) {
-		t.Error("Inject should return false before login")
+	if injector.Inject(req) == InjectOK {
+		t.Error("Inject should not succeed before login")
 	}
 
 	loginResp, _ := json.Marshal(map[string]any{
@@ -398,7 +424,7 @@ func TestChatGPTAcceptLoginTokens(t *testing.T) {
 	}
 
 	req2 := &http.Request{Header: make(http.Header)}
-	if !injector.Inject(req2) {
+	if injector.Inject(req2) != InjectOK {
 		t.Fatal("Inject should succeed after AcceptLoginTokens")
 	}
 	if req2.Header.Get("Authorization") != "Bearer "+access {
@@ -454,8 +480,8 @@ func TestChatGPTNoCredentialAndNoLogLeakage(t *testing.T) {
 	store := NewStore()
 	store.AddRoute(Route{ExactDomain: "chatgpt.com", Injector: &ChatGPTInjector{config: ChatGPTOAuthConfig{}}})
 	req := &http.Request{URL: &url.URL{Host: "chatgpt.com"}, Header: make(http.Header)}
-	if matched, injected := store.InjectCredentials(req); !matched || injected {
-		t.Error("unavailable credential should fail closed")
+	if result := store.InjectCredentials(req); result != InjectFailed {
+		t.Errorf("unavailable credential should return InjectFailed, got %d", result)
 	}
 	if strings.Contains(logs.String(), secret) {
 		t.Error("secret appeared in credential logs")

@@ -105,11 +105,12 @@ func (c *ChatGPTInjector) Available() bool {
 	return c.ensureLoaded() == nil
 }
 
-// Inject sets the ChatGPT Authorization and account headers. Refresh failures
-// return false without modifying either header.
-func (c *ChatGPTInjector) Inject(req *http.Request) bool {
+// Inject sets the ChatGPT Authorization and account headers. Returns
+// InjectAuthRequired when waiting for a login flow to complete (no tokens
+// loaded), causing the proxy to respond with 401 instead of 502.
+func (c *ChatGPTInjector) Inject(req *http.Request) InjectResult {
 	if !validateRequest(req, "ChatGPTInjector") {
-		return false
+		return InjectFailed
 	}
 
 	c.mu.Lock()
@@ -117,25 +118,28 @@ func (c *ChatGPTInjector) Inject(req *http.Request) bool {
 
 	if err := c.ensureLoadedLocked(); err != nil {
 		log.Printf("ERROR chatgpt credential initialization failed")
-		return false
+		return InjectFailed
 	}
 	if c.document.tokens.RefreshToken == "" {
-		return false
+		log.Printf("WARN chatgpt credential not available: no tokens loaded (login may be required via token vendor)")
+		return InjectAuthRequired
 	}
 	if c.needsRefreshLocked() {
 		if err := c.refreshLocked(); err != nil {
 			log.Printf("ERROR chatgpt credential refresh failed")
-			return false
+			return InjectFailed
 		}
 	}
 
 	accountID := c.accountIDLocked()
 	if c.document.tokens.AccessToken == "" || accountID == "" {
-		return false
+		log.Printf("WARN chatgpt credential incomplete: access_token_present=%t account_id_present=%t",
+			c.document.tokens.AccessToken != "", accountID != "")
+		return InjectFailed
 	}
 	req.Header.Set("Authorization", "Bearer "+c.document.tokens.AccessToken)
 	req.Header.Set(chatGPTAccountHeader, accountID)
-	return true
+	return InjectOK
 }
 
 func (c *ChatGPTInjector) ensureLoaded() error {
