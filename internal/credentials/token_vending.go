@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -34,8 +36,9 @@ func errorResponse(statusCode int, message string) *http.Response {
 // This means the agent never sees any real credential — not the refresh token,
 // not the service account key, and not even a short-lived access token.
 type TokenVendor struct {
-	googleEnabled  bool
-	chatGPTEnabled bool
+	googleEnabled   bool
+	chatGPTEnabled  bool
+	chatGPTInjector *ChatGPTInjector
 }
 
 // NewTokenVendor creates a token vendor.
@@ -44,9 +47,52 @@ func NewTokenVendor() *TokenVendor {
 }
 
 // NewChatGPTTokenVendor creates a vendor for the Codex ChatGPT OAuth token
-// endpoint. The response contains only synthetic values.
-func NewChatGPTTokenVendor() *TokenVendor {
-	return &TokenVendor{chatGPTEnabled: true}
+// endpoint. Login-completing exchanges are forwarded to the real endpoint and
+// persisted via the injector; refresh requests return synthetic values only.
+func NewChatGPTTokenVendor(injector *ChatGPTInjector) *TokenVendor {
+	return &TokenVendor{chatGPTEnabled: true, chatGPTInjector: injector}
+}
+
+var allowedLoginParams = map[string][]string{
+	"authorization_code": {
+		"grant_type", "code", "redirect_uri", "client_id", "code_verifier",
+	},
+	"urn:ietf:params:oauth:grant-type:device_code": {
+		"grant_type", "device_code", "client_id",
+	},
+	"urn:ietf:params:oauth:grant-type:token-exchange": {
+		"grant_type", "client_id", "requested_token", "subject_token", "subject_token_type",
+	},
+}
+
+func sanitizeLoginForm(agentValues url.Values, clientID string) (url.Values, error) {
+	grantType := agentValues.Get("grant_type")
+	if grantType == "" {
+		return nil, fmt.Errorf("missing grant_type")
+	}
+	allowed, known := allowedLoginParams[grantType]
+	if !known {
+		return nil, fmt.Errorf("unsupported grant_type %q", grantType)
+	}
+
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, p := range allowed {
+		allowedSet[p] = true
+	}
+	for key := range agentValues {
+		if !allowedSet[key] {
+			log.Printf("LOGIN_SANITIZE stripped disallowed parameter %q from %s grant", key, grantType)
+		}
+	}
+
+	sanitized := make(url.Values, len(allowed))
+	for _, param := range allowed {
+		if v := agentValues.Get(param); v != "" {
+			sanitized.Set(param, v)
+		}
+	}
+	sanitized.Set("client_id", clientID)
+	return sanitized, nil
 }
 
 // tokenResponse covers the OAuth fields needed by Google Auth and Codex.
@@ -107,13 +153,22 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 			TokenType:   "Bearer",
 		}
 	} else if tv.chatGPTEnabled && IsChatGPTTokenExchange(req) {
-		resp = &tokenResponse{
-			AccessToken:  "paude-proxy-managed-access",
-			RefreshToken: "paude-proxy-managed-refresh",
-			IDToken:      syntheticChatGPTIDToken(),
-			ExpiresIn:    3600,
-			TokenType:    "Bearer",
+		bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+		if err != nil {
+			return errorResponse(http.StatusBadRequest, "Failed to read request body")
 		}
+
+		values, err := url.ParseQuery(string(bodyBytes))
+		if err != nil {
+			return errorResponse(http.StatusBadRequest, "Malformed form body")
+		}
+		grantType := values.Get("grant_type")
+
+		if grantType == "refresh_token" {
+			log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
+			return syntheticChatGPTResponse(req)
+		}
+		return tv.handleLoginExchange(req, values)
 	} else {
 		return nil
 	}
@@ -126,6 +181,84 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 
 	log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
 
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"application/json"}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}
+}
+
+func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Values) *http.Response {
+	if tv.chatGPTInjector == nil {
+		log.Printf("ERROR login exchange: no ChatGPT injector configured")
+		return errorResponse(http.StatusInternalServerError, "Internal proxy error")
+	}
+
+	sanitized, err := sanitizeLoginForm(agentValues, tv.chatGPTInjector.config.ClientID)
+	if err != nil {
+		log.Printf("LOGIN_SANITIZE rejected request: %v", err)
+		return errorResponse(http.StatusBadRequest, "Invalid login exchange request")
+	}
+
+	forwardReq, err := http.NewRequest(http.MethodPost, chatGPTTokenURL, strings.NewReader(sanitized.Encode()))
+	if err != nil {
+		log.Printf("ERROR login exchange: construct forward request")
+		return errorResponse(http.StatusInternalServerError, "Internal proxy error")
+	}
+	forwardReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	httpClient := tv.chatGPTInjector.config.HTTPClient
+	upstreamResp, err := httpClient.Do(forwardReq)
+	if err != nil {
+		log.Printf("ERROR login exchange: upstream request failed")
+		return errorResponse(http.StatusBadGateway, "Login exchange failed")
+	}
+	defer upstreamResp.Body.Close()
+
+	upstreamBody, err := io.ReadAll(io.LimitReader(upstreamResp.Body, 1<<20))
+	if err != nil {
+		return errorResponse(http.StatusBadGateway, "Login exchange response unreadable")
+	}
+
+	if upstreamResp.StatusCode < http.StatusOK || upstreamResp.StatusCode >= http.StatusMultipleChoices {
+		log.Printf("TOKEN_VEND host=%s path=%s (login exchange upstream returned %d, passing through to agent)", req.URL.Host, req.URL.Path, upstreamResp.StatusCode)
+		ct := upstreamResp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/json"
+		}
+		return &http.Response{
+			StatusCode:    upstreamResp.StatusCode,
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        http.Header{"Content-Type": {ct}},
+			Body:          io.NopCloser(bytes.NewReader(upstreamBody)),
+			ContentLength: int64(len(upstreamBody)),
+			Request:       req,
+		}
+	}
+
+	if err := tv.chatGPTInjector.AcceptLoginTokens(upstreamBody); err != nil {
+		log.Printf("ERROR login exchange: token acceptance failed")
+		return errorResponse(http.StatusInternalServerError, "Login token processing failed")
+	}
+
+	log.Printf("TOKEN_VEND host=%s path=%s (login exchange completed, real tokens persisted, synthetic response returned)", req.URL.Host, req.URL.Path)
+	return syntheticChatGPTResponse(req)
+}
+
+func syntheticChatGPTResponse(req *http.Request) *http.Response {
+	resp := &tokenResponse{
+		AccessToken:  "paude-proxy-managed-access",
+		RefreshToken: "paude-proxy-managed-refresh",
+		IDToken:      syntheticChatGPTIDToken(),
+		ExpiresIn:    3600,
+		TokenType:    "Bearer",
+	}
+	body, _ := json.Marshal(resp)
 	return &http.Response{
 		StatusCode:    http.StatusOK,
 		ProtoMajor:    1,

@@ -305,8 +305,12 @@ func TestChatGPTTokenVending(t *testing.T) {
 	if IsChatGPTTokenExchange(&http.Request{Method: http.MethodPost, URL: &url.URL{Host: "auth.openai.com", Path: "/oauth/other"}}) {
 		t.Error("wrong path must not be treated as token exchange")
 	}
-	vendor := NewChatGPTTokenVendor()
-	response := vendor.HandleTokenExchange(&http.Request{Method: http.MethodPost, URL: &url.URL{Host: "auth.openai.com", Path: "/oauth/token"}})
+	vendor := NewChatGPTTokenVendor(nil)
+	response := vendor.HandleTokenExchange(&http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "auth.openai.com", Path: "/oauth/token"},
+		Body:   io.NopCloser(strings.NewReader("grant_type=refresh_token")),
+	})
 	if response == nil || response.StatusCode != http.StatusOK {
 		t.Fatal("ChatGPT token exchange was not handled")
 	}
@@ -316,6 +320,125 @@ func TestChatGPTTokenVending(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte("paude-proxy-managed-access")) || bytes.Contains(body, []byte("real-access")) {
 		t.Error("token vendor response is not synthetic")
+	}
+}
+
+func TestChatGPTStatePathOnly_NoFileYet(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+
+	injector := NewChatGPTInjector("", statePath)
+	if !injector.Available() {
+		t.Fatal("StatePath-only injector should be available even before login completes")
+	}
+
+	req := &http.Request{Header: make(http.Header)}
+	req.Header.Set("Authorization", "Bearer agent-dummy")
+	if injector.Inject(req) {
+		t.Error("Inject should return false when no tokens are loaded yet")
+	}
+	if req.Header.Get("Authorization") != "Bearer agent-dummy" {
+		t.Error("failed injection should not modify the agent header")
+	}
+}
+
+func TestChatGPTStatePathOnly_FileExists(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "auth.json")
+	access := testJWT(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
+	writePrivateAuth(t, statePath, testAuthJSON(access, "refresh", "", "account"))
+
+	injector := NewChatGPTInjector("", statePath)
+	if !injector.Available() {
+		t.Fatal("StatePath-only with existing file should be available")
+	}
+
+	req := &http.Request{Header: make(http.Header)}
+	if !injector.Inject(req) {
+		t.Fatal("Inject should succeed when StatePath has valid tokens")
+	}
+	if req.Header.Get("Authorization") != "Bearer "+access {
+		t.Error("access token was not injected")
+	}
+	if req.Header.Get(chatGPTAccountHeader) != "account" {
+		t.Error("account ID was not injected")
+	}
+}
+
+func TestChatGPTAcceptLoginTokens(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+	now := time.Unix(1_700_000_000, 0)
+	access := testJWT(map[string]any{
+		"exp":                now.Add(time.Hour).Unix(),
+		"chatgpt_account_id": "logged-in-account",
+	})
+
+	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
+		StatePath: statePath,
+		Now:       func() time.Time { return now },
+	})
+
+	if !injector.Available() {
+		t.Fatal("StatePath-only injector should be available")
+	}
+	req := &http.Request{Header: make(http.Header)}
+	if injector.Inject(req) {
+		t.Error("Inject should return false before login")
+	}
+
+	loginResp, _ := json.Marshal(map[string]any{
+		"access_token":  access,
+		"refresh_token": "real-refresh",
+		"id_token":      testJWT(map[string]any{"chatgpt_account_id": "logged-in-account"}),
+		"expires_in":    3600,
+	})
+	if err := injector.AcceptLoginTokens(loginResp); err != nil {
+		t.Fatalf("AcceptLoginTokens failed: %v", err)
+	}
+
+	req2 := &http.Request{Header: make(http.Header)}
+	if !injector.Inject(req2) {
+		t.Fatal("Inject should succeed after AcceptLoginTokens")
+	}
+	if req2.Header.Get("Authorization") != "Bearer "+access {
+		t.Error("access token was not injected after login")
+	}
+	if req2.Header.Get(chatGPTAccountHeader) != "logged-in-account" {
+		t.Error("account ID was not injected after login")
+	}
+
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("state file was not persisted: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("state permissions = %o, want 600", info.Mode().Perm())
+	}
+	persisted, _ := os.ReadFile(statePath)
+	if !bytes.Contains(persisted, []byte("real-refresh")) {
+		t.Error("refresh token was not persisted")
+	}
+}
+
+func TestChatGPTAcceptLoginTokens_Malformed(t *testing.T) {
+	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
+		StatePath: filepath.Join(t.TempDir(), "auth.json"),
+		Now:       time.Now,
+	})
+
+	cases := map[string][]byte{
+		"not json":           []byte("not-json"),
+		"missing access":     []byte(`{"refresh_token":"r"}`),
+		"missing refresh":    []byte(`{"access_token":"a"}`),
+		"missing account_id": []byte(`{"access_token":"opaque","refresh_token":"r"}`),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := injector.AcceptLoginTokens(body); err == nil {
+				t.Error("AcceptLoginTokens should reject malformed input")
+			}
+		})
 	}
 }
 

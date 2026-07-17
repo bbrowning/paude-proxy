@@ -566,4 +566,67 @@ func TestBuildFromConfig_ChatGPT(t *testing.T) {
 	if req.Header.Get("ChatGPT-Account-ID") != "account" {
 		t.Error("ChatGPT route did not inject account ID")
 	}
+	if tokenVendor.chatGPTInjector == nil {
+		t.Error("ChatGPT injector should be wired to token vendor")
+	}
+}
+
+func TestBuildFromConfig_ChatGPT_StateFileOnly(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+	t.Setenv("CHATGPT_AUTH_FILE", "")
+	t.Setenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE", statePath)
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "CHATGPT_AUTH_FILE",
+			InjectorType: "chatgpt",
+			Params:       map[string]string{"path_prefix": "/backend-api/codex"},
+			Domains:      []string{"chatgpt.com"},
+		},
+	}}
+	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+	if tokenVendor == nil {
+		t.Fatal("ChatGPT token vendor should be enabled with state file only")
+	}
+	if !tokenVendor.chatGPTEnabled {
+		t.Error("chatGPTEnabled should be true")
+	}
+	if tokenVendor.chatGPTInjector == nil {
+		t.Error("chatGPTInjector should be wired to token vendor")
+	}
+	if got := domainMap["CHATGPT_AUTH_FILE"]; len(got) < 2 || got[1] != "auth.openai.com" {
+		t.Errorf("domain map = %v, want API and OAuth domains", got)
+	}
+
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "chatgpt.com", Path: "/backend-api/codex/responses"},
+		Header: make(http.Header),
+	}
+	matched, injected := store.InjectCredentials(req)
+	if !matched {
+		t.Fatal("route should match even before login")
+	}
+	if injected {
+		t.Error("should not inject before login (no tokens yet)")
+	}
+}
+
+func TestBuildFromConfig_ChatGPT_NeitherSet(t *testing.T) {
+	t.Setenv("CHATGPT_AUTH_FILE", "")
+	t.Setenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE", "")
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "CHATGPT_AUTH_FILE",
+			InjectorType: "chatgpt",
+			Params:       map[string]string{"path_prefix": "/backend-api/codex"},
+			Domains:      []string{"chatgpt.com"},
+		},
+	}}
+	_, tokenVendor, _ := BuildFromConfig(cfg)
+	if tokenVendor != nil && tokenVendor.chatGPTEnabled {
+		t.Error("neither env var set should not enable ChatGPT token vending")
+	}
 }

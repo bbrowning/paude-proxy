@@ -99,15 +99,21 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 	domainMap := make(map[string][]string)
 
 	gcpADCJSON := os.Getenv("GCP_ADC_JSON")
+	chatGPTStatePath := os.Getenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE")
 
 	for _, entry := range cfg.Credentials {
 		value := os.Getenv(entry.EnvVar)
 
-		// For gcloud entries, GCP_ADC_JSON takes precedence over the file path
-		// and allows processing even if GOOGLE_APPLICATION_CREDENTIALS is unset.
-		if entry.InjectorType == "gcloud" && gcpADCJSON == "" && value == "" {
-			continue
-		} else if value == "" && entry.InjectorType != "gcloud" {
+		hasSource := value != ""
+		if !hasSource {
+			switch entry.InjectorType {
+			case "gcloud":
+				hasSource = gcpADCJSON != ""
+			case "chatgpt":
+				hasSource = chatGPTStatePath != ""
+			}
+		}
+		if !hasSource {
 			continue
 		}
 
@@ -143,14 +149,15 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 			tokenVendor.googleEnabled = true
 			log.Println("Token vendor: ENABLED (returns dummy tokens for oauth2.googleapis.com/token)")
 		case "chatgpt":
-			chatGPTInjector := NewChatGPTInjector(value, os.Getenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE"))
+			chatGPTInjector := NewChatGPTInjector(value, chatGPTStatePath)
 			if !chatGPTInjector.Available() {
-				log.Printf("WARN: %s auth file is not loadable", entry.EnvVar)
+				log.Printf("WARN: chatgpt auth is not loadable")
 				continue
 			}
 			injector = chatGPTInjector
 			tokenVendor = ensureTokenVendor(tokenVendor)
 			tokenVendor.chatGPTEnabled = true
+			tokenVendor.chatGPTInjector = chatGPTInjector
 			log.Println("Token vendor: ENABLED (returns dummy tokens for auth.openai.com/oauth/token)")
 		}
 
