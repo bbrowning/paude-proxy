@@ -481,9 +481,14 @@ func New(cfg Config) *http.Server {
 
 			// Inject credentials for API requests
 			if cfg.CredStore != nil {
-				matched, injected := cfg.CredStore.InjectCredentials(req)
-				if matched && !injected {
-					log.Printf("CREDENTIAL_INJECT_FAILED_502 method=%s host=%s path=%s", req.Method, req.URL.Host, req.URL.Path)
+				switch cfg.CredStore.InjectCredentials(req) {
+				case credentials.InjectAuthRequired:
+					return req, goproxy.NewResponse(req,
+						goproxy.ContentTypeText,
+						http.StatusUnauthorized,
+						"Authentication required",
+					)
+				case credentials.InjectFailed:
 					return req, goproxy.NewResponse(req,
 						goproxy.ContentTypeText,
 						http.StatusBadGateway,

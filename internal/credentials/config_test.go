@@ -217,7 +217,7 @@ func TestBuildFromConfig_Bearer(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req); !matched || !injected {
+	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.openai.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-123" {
@@ -245,7 +245,7 @@ func TestBuildFromConfig_APIKey(t *testing.T) {
 		URL:    &url.URL{Host: "api.anthropic.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req); !matched || !injected {
+	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.anthropic.com")
 	}
 	if got := req.Header.Get("x-api-key"); got != "sk-ant-test" {
@@ -272,7 +272,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "api.github.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req); !matched || !injected {
+	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.github.com")
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer ghp_test" {
@@ -284,7 +284,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "github.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req2); matched {
+	if result := store.InjectCredentials(req2); result != InjectNoMatch {
 		t.Error("should not match github.com")
 	}
 
@@ -293,7 +293,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "raw.githubusercontent.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req3); matched {
+	if result := store.InjectCredentials(req3); result != InjectNoMatch {
 		t.Error("should not match raw.githubusercontent.com")
 	}
 }
@@ -323,7 +323,7 @@ func TestBuildFromConfig_MissingEnvVarSkipped(t *testing.T) {
 		URL:    &url.URL{Host: "api.example.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req); matched {
+	if result := store.InjectCredentials(req); result != InjectNoMatch {
 		t.Error("should not match when env var is unset")
 	}
 }
@@ -358,7 +358,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.a.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req1); !matched || !injected {
+	if result := store.InjectCredentials(req1); result != InjectOK {
 		t.Error("should match api.a.com")
 	}
 	if got := req1.Header.Get("Authorization"); got != "Bearer key-a" {
@@ -370,7 +370,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.b.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
+	if result := store.InjectCredentials(req2); result != InjectOK {
 		t.Error("should match api.b.com")
 	}
 	if got := req2.Header.Get("Authorization"); got != "Bearer key-b" {
@@ -406,7 +406,7 @@ func TestBuildFromConfig_GCloudFromJSON(t *testing.T) {
 		URL:    &url.URL{Host: "storage.googleapis.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req); !matched {
+	if result := store.InjectCredentials(req); result == InjectNoMatch {
 		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
 	}
 }
@@ -437,7 +437,7 @@ func TestBuildFromConfig_GCloudJSONPreferredOverFile(t *testing.T) {
 		URL:    &url.URL{Host: "storage.googleapis.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req); !matched {
+	if result := store.InjectCredentials(req); result == InjectNoMatch {
 		t.Error("should match storage.googleapis.com with gcloud injector from JSON")
 	}
 }
@@ -507,7 +507,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "exact.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req1); !matched || !injected {
+	if result := store.InjectCredentials(req1); result != InjectOK {
 		t.Error("should match exact.com")
 	}
 
@@ -516,7 +516,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "sub.suffix.com"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req2); !matched || !injected {
+	if result := store.InjectCredentials(req2); result != InjectOK {
 		t.Error("should match sub.suffix.com")
 	}
 
@@ -525,7 +525,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "other.com"},
 		Header: make(http.Header),
 	}
-	if matched, _ := store.InjectCredentials(req3); matched {
+	if result := store.InjectCredentials(req3); result != InjectNoMatch {
 		t.Error("should not match other.com")
 	}
 }
@@ -560,7 +560,7 @@ func TestBuildFromConfig_ChatGPT(t *testing.T) {
 		URL:    &url.URL{Host: "chatgpt.com", Path: "/backend-api/codex/responses"},
 		Header: make(http.Header),
 	}
-	if matched, injected := store.InjectCredentials(req); !matched || !injected {
+	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Fatal("ChatGPT route should inject")
 	}
 	if req.Header.Get("ChatGPT-Account-ID") != "account" {
@@ -604,12 +604,8 @@ func TestBuildFromConfig_ChatGPT_StateFileOnly(t *testing.T) {
 		URL:    &url.URL{Host: "chatgpt.com", Path: "/backend-api/codex/responses"},
 		Header: make(http.Header),
 	}
-	matched, injected := store.InjectCredentials(req)
-	if !matched {
-		t.Fatal("route should match even before login")
-	}
-	if injected {
-		t.Error("should not inject before login (no tokens yet)")
+	if result := store.InjectCredentials(req); result != InjectAuthRequired {
+		t.Fatalf("pre-login should return InjectAuthRequired, got %d", result)
 	}
 }
 
@@ -628,5 +624,41 @@ func TestBuildFromConfig_ChatGPT_NeitherSet(t *testing.T) {
 	_, tokenVendor, _ := BuildFromConfig(cfg)
 	if tokenVendor != nil && tokenVendor.chatGPTEnabled {
 		t.Error("neither env var set should not enable ChatGPT token vending")
+	}
+}
+
+func TestBuildFromConfig_ChatGPT_WhamEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	access := testJWT(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
+	id := testJWT(map[string]any{"chatgpt_account_id": "acct-123"})
+	writePrivateAuth(t, authPath, testAuthJSON(access, "refresh", id, ""))
+	t.Setenv("CHATGPT_AUTH_FILE", authPath)
+	t.Setenv("PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE", filepath.Join(dir, "state", "auth.json"))
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "CHATGPT_AUTH_FILE",
+			InjectorType: "chatgpt",
+			Params:       map[string]string{"path_prefix": "/backend-api"},
+			Domains:      []string{"chatgpt.com"},
+		},
+	}}
+	store, _, _ := BuildFromConfig(cfg)
+
+	// /backend-api/wham/usage should get ChatGPT OAuth injection
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    &url.URL{Host: "chatgpt.com", Path: "/backend-api/wham/usage"},
+		Header: make(http.Header),
+	}
+	if result := store.InjectCredentials(req); result != InjectOK {
+		t.Fatal("ChatGPT route should match /backend-api/wham/usage")
+	}
+	if req.Header.Get("Authorization") == "" {
+		t.Error("expected Authorization header to be set")
+	}
+	if req.Header.Get("ChatGPT-Account-ID") != "acct-123" {
+		t.Errorf("ChatGPT-Account-ID = %q, want %q", req.Header.Get("ChatGPT-Account-ID"), "acct-123")
 	}
 }

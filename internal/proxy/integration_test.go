@@ -822,8 +822,8 @@ func TestIntegration_UntrustedUpstreamCert(t *testing.T) {
 // failingInjector always fails to inject credentials.
 type failingInjector struct{}
 
-func (f *failingInjector) Inject(req *http.Request) bool {
-	return false
+func (f *failingInjector) Inject(req *http.Request) credentials.InjectResult {
+	return credentials.InjectFailed
 }
 
 func TestIntegration_CredentialInjectionFailure_Returns502(t *testing.T) {
@@ -986,7 +986,7 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 	defer cleanup()
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, primary.Certificate())
 
-	// Before login: API request should fail with 502
+	// Before login: API request should fail with 401
 	preLoginReq, _ := http.NewRequest(http.MethodPost, primary.URL+"/backend-api/codex/responses", strings.NewReader("{}"))
 	preLoginReq.Header.Set("Authorization", "Bearer agent-dummy")
 	preLoginResp, err := client.Do(preLoginReq)
@@ -994,8 +994,8 @@ func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
 		t.Fatalf("pre-login request failed: %v", err)
 	}
 	_ = preLoginResp.Body.Close()
-	if preLoginResp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("pre-login status = %d, want 502", preLoginResp.StatusCode)
+	if preLoginResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("pre-login status = %d, want 401", preLoginResp.StatusCode)
 	}
 
 	// Simulate codex login device-code exchange (with extra params that should be stripped)

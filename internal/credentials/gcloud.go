@@ -90,30 +90,30 @@ func (g *GCloudInjector) init() error {
 
 // Inject sets the Authorization: Bearer header with a fresh OAuth2 token.
 // Always overrides — the agent may have a token from a dummy ADC file.
-func (g *GCloudInjector) Inject(req *http.Request) bool {
+func (g *GCloudInjector) Inject(req *http.Request) InjectResult {
 	if req == nil {
 		log.Printf("DEFENSIVE_CHECK: GCloudInjector.Inject called with nil request")
-		return false
+		return InjectFailed
 	}
 
 	if err := g.init(); err != nil {
 		log.Printf("ERROR gcloud credential init failed: %v", err)
-		return false
+		return InjectFailed
 	}
 
 	token, err := g.credentials.TokenSource.Token()
 	if err != nil {
 		log.Printf("ERROR gcloud token refresh failed: %v", err)
-		return false
+		return InjectFailed
 	}
 
 	if !token.Valid() {
 		log.Printf("WARN gcloud token is invalid after refresh")
-		return false
+		return InjectFailed
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	return true
+	return InjectOK
 }
 
 // Available returns true if ADC credentials can be loaded (from JSON or file).

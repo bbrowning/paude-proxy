@@ -7,11 +7,20 @@ import (
 	"sync"
 )
 
+// InjectResult describes the outcome of a credential injection attempt.
+type InjectResult int
+
+const (
+	InjectNoMatch      InjectResult = iota // no route matched — pass through
+	InjectOK                               // credentials injected — forward to upstream
+	InjectFailed                           // injection error — 502 Bad Gateway
+	InjectAuthRequired                     // waiting for login — 401 Unauthorized
+)
+
 // Injector can inject credentials into an HTTP request.
 type Injector interface {
 	// Inject adds credential headers to the request.
-	// Returns true if the credential was successfully set, false on error.
-	Inject(req *http.Request) bool
+	Inject(req *http.Request) InjectResult
 }
 
 // Route maps a domain pattern to a credential injector.
@@ -56,16 +65,14 @@ func (s *Store) AddRoute(route Route) {
 	s.routes = append(s.routes, route)
 }
 
-// InjectCredentials finds the first matching route for the request's
-// host and injects credentials. Returns (matched, injected) where matched
-// indicates a route was found and injected indicates the credential was
-// successfully set.
-func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
+// InjectCredentials finds the first matching route for the request's host
+// and injects credentials.
+func (s *Store) InjectCredentials(req *http.Request) InjectResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if req == nil || req.URL == nil {
-		return false, false
+		return InjectNoMatch
 	}
 
 	host := req.URL.Host
@@ -89,17 +96,20 @@ func (s *Store) InjectCredentials(req *http.Request) (bool, bool) {
 		}
 
 		if matched {
-			ok := route.Injector.Inject(req)
-			if ok {
+			result := route.Injector.Inject(req)
+			switch result {
+			case InjectOK:
 				log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
-			} else {
+			case InjectFailed:
 				log.Printf("CREDENTIAL_INJECT_FAILED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+			case InjectAuthRequired:
+				log.Printf("CREDENTIAL_AUTH_REQUIRED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
 			}
-			return true, ok
+			return result
 		}
 	}
 
-	return false, false
+	return InjectNoMatch
 }
 
 func pathMatchesPrefix(path, prefix string) bool {
