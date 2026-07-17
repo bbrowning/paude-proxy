@@ -551,7 +551,7 @@ func TestIntegration_ChatGPTOAuthProxyFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxyAddr, cleanup := startTestProxy(t, ca, df, store, credentials.NewChatGPTTokenVendor(), pool)
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, credentials.NewChatGPTTokenVendor(injector), pool)
 	defer cleanup()
 	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, primary.Certificate())
 
@@ -577,7 +577,7 @@ func TestIntegration_ChatGPTOAuthProxyFlow(t *testing.T) {
 		t.Error("unrelated request header was not preserved")
 	}
 
-	tokenReq, _ := http.NewRequest(http.MethodPost, "http://auth.openai.com/oauth/token", strings.NewReader("refresh_token=agent-dummy"))
+	tokenReq, _ := http.NewRequest(http.MethodPost, "http://auth.openai.com/oauth/token", strings.NewReader("grant_type=refresh_token&refresh_token=agent-dummy"))
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
 		t.Fatalf("dummy token exchange failed: %v", err)
@@ -919,4 +919,114 @@ func TestIntegration_ProxyTransport_ResponseHeaderTimeout(t *testing.T) {
 	}
 
 	t.Logf("Request timed out after %v as expected", elapsed)
+}
+
+func TestIntegration_ChatGPTLoginFlow(t *testing.T) {
+	skipIntegration(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+	now := time.Unix(1_700_000_000, 0)
+	realAccess := testProxyJWT(map[string]any{
+		"exp":                now.Add(time.Hour).Unix(),
+		"chatgpt_account_id": "login-account",
+	})
+	realID := testProxyJWT(map[string]any{"chatgpt_account_id": "login-account"})
+
+	loginServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		values, _ := url.Parse("?" + string(body))
+		gt := values.Query().Get("grant_type")
+		if gt == "urn:ietf:params:oauth:grant-type:device_code" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  realAccess,
+				"refresh_token": "login-refresh",
+				"id_token":      realID,
+				"expires_in":    3600,
+			})
+		} else {
+			http.Error(w, "unexpected grant_type", http.StatusBadRequest)
+		}
+	}))
+	defer loginServer.Close()
+
+	var primaryHeaders http.Header
+	primary := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer primary.Close()
+	primaryURL, _ := url.Parse(primary.URL)
+
+	injector := credentials.NewChatGPTInjectorWithConfig(credentials.ChatGPTOAuthConfig{
+		StatePath:  statePath,
+		HTTPClient: chatGPTTestClient(t, loginServer),
+		Now:        func() time.Time { return now },
+	})
+	store := credentials.NewStore()
+	store.AddRoute(credentials.Route{
+		ExactDomain: primaryURL.Hostname(),
+		PathPrefix:  "/backend-api/codex",
+		Injector:    injector,
+	})
+	df := filter.NewDomainFilter(primaryURL.Hostname() + ",auth.openai.com")
+	pool := upstreamCertPool(t, primary)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, credentials.NewChatGPTTokenVendor(injector), pool)
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, primary.Certificate())
+
+	// Before login: API request should fail with 502
+	preLoginReq, _ := http.NewRequest(http.MethodPost, primary.URL+"/backend-api/codex/responses", strings.NewReader("{}"))
+	preLoginReq.Header.Set("Authorization", "Bearer agent-dummy")
+	preLoginResp, err := client.Do(preLoginReq)
+	if err != nil {
+		t.Fatalf("pre-login request failed: %v", err)
+	}
+	_ = preLoginResp.Body.Close()
+	if preLoginResp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("pre-login status = %d, want 502", preLoginResp.StatusCode)
+	}
+
+	// Simulate codex login device-code exchange
+	loginReq, _ := http.NewRequest(http.MethodPost, "http://auth.openai.com/oauth/token",
+		strings.NewReader("grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test-code"))
+	loginResp, err := client.Do(loginReq)
+	if err != nil {
+		t.Fatalf("login exchange failed: %v", err)
+	}
+	loginBody, _ := io.ReadAll(loginResp.Body)
+	_ = loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login exchange status = %d, want 200", loginResp.StatusCode)
+	}
+	if !bytes.Contains(loginBody, []byte("paude-proxy-managed-access")) {
+		t.Error("agent should receive synthetic access token from login exchange")
+	}
+	if bytes.Contains(loginBody, []byte(realAccess)) || bytes.Contains(loginBody, []byte("login-refresh")) {
+		t.Error("agent should NOT receive real tokens from login exchange")
+	}
+
+	// After login: API request should succeed with real credentials injected
+	postLoginReq, _ := http.NewRequest(http.MethodPost, primary.URL+"/backend-api/codex/responses", strings.NewReader("{}"))
+	postLoginReq.Header.Set("Authorization", "Bearer agent-dummy")
+	postLoginReq.Header.Set("ChatGPT-Account-ID", "agent-dummy-account")
+	postLoginResp, err := client.Do(postLoginReq)
+	if err != nil {
+		t.Fatalf("post-login request failed: %v", err)
+	}
+	_ = postLoginResp.Body.Close()
+	if postLoginResp.StatusCode != http.StatusOK {
+		t.Fatalf("post-login status = %d, want 200", postLoginResp.StatusCode)
+	}
+	if primaryHeaders.Get("Authorization") != "Bearer "+realAccess {
+		t.Error("upstream did not receive the login access token")
+	}
+	if primaryHeaders.Get("ChatGPT-Account-ID") != "login-account" {
+		t.Error("upstream did not receive the login account ID")
+	}
 }

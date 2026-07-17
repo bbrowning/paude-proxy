@@ -1,10 +1,17 @@
 package credentials
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsTokenExchange_NilRequest(t *testing.T) {
@@ -100,5 +107,138 @@ func TestHandleTokenExchange_ValidRequest(t *testing.T) {
 	// Should contain the dummy token
 	if len(bodyStr) < 10 {
 		t.Errorf("response body suspiciously short: %q", bodyStr)
+	}
+}
+
+func TestChatGPTTokenVendor_RefreshToken_ReturnsSynthetic(t *testing.T) {
+	vendor := NewChatGPTTokenVendor(nil)
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "auth.openai.com", Path: "/oauth/token"},
+		Body:   io.NopCloser(strings.NewReader("grant_type=refresh_token&refresh_token=dummy")),
+	}
+	resp := vendor.HandleTokenExchange(req)
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatal("refresh_token grant should return synthetic response")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("paude-proxy-managed-access")) {
+		t.Error("response should contain synthetic access token")
+	}
+}
+
+func TestChatGPTTokenVendor_LoginExchange_ForwardsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state", "auth.json")
+	now := time.Unix(1_700_000_000, 0)
+	realAccess := testJWT(map[string]any{
+		"exp":                now.Add(time.Hour).Unix(),
+		"chatgpt_account_id": "real-account",
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		values, _ := url.ParseQuery(string(body))
+		if values.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" {
+			t.Errorf("unexpected grant_type forwarded: %s", values.Get("grant_type"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  realAccess,
+			"refresh_token": "real-refresh",
+			"id_token":      testJWT(map[string]any{"chatgpt_account_id": "real-account"}),
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
+		StatePath:  statePath,
+		HTTPClient: chatGPTTestClient(t, server),
+		Now:        func() time.Time { return now },
+	})
+
+	vendor := NewChatGPTTokenVendor(injector)
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "auth.openai.com", Path: "/oauth/token"},
+		Body:   io.NopCloser(strings.NewReader("grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test-code")),
+	}
+	resp := vendor.HandleTokenExchange(req)
+	if resp == nil {
+		t.Fatal("login exchange should return a response")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login exchange status = %d, want 200", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("paude-proxy-managed-access")) {
+		t.Error("agent should receive synthetic access token")
+	}
+	if bytes.Contains(body, []byte(realAccess)) {
+		t.Error("agent should NOT receive real access token")
+	}
+	if bytes.Contains(body, []byte("real-refresh")) {
+		t.Error("agent should NOT receive real refresh token")
+	}
+
+	persisted, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("state file was not persisted: %v", err)
+	}
+	if !bytes.Contains(persisted, []byte("real-refresh")) {
+		t.Error("real refresh token was not persisted to state file")
+	}
+
+	injectReq := &http.Request{Header: make(http.Header)}
+	if !injector.Inject(injectReq) {
+		t.Fatal("Inject should succeed after login exchange")
+	}
+	if injectReq.Header.Get("Authorization") != "Bearer "+realAccess {
+		t.Error("injected access token does not match login exchange result")
+	}
+}
+
+func TestChatGPTTokenVendor_LoginExchange_UpstreamError_PassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "auth.json")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":             "authorization_pending",
+			"error_description": "The user has not yet completed authorization",
+		})
+	}))
+	defer server.Close()
+
+	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
+		StatePath:  statePath,
+		HTTPClient: chatGPTTestClient(t, server),
+		Now:        time.Now,
+	})
+
+	vendor := NewChatGPTTokenVendor(injector)
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "auth.openai.com", Path: "/oauth/token"},
+		Body:   io.NopCloser(strings.NewReader("grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test")),
+	}
+	resp := vendor.HandleTokenExchange(req)
+	if resp == nil {
+		t.Fatal("should return a response")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("upstream error status = %d, want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("authorization_pending")) {
+		t.Error("upstream error body should be passed through to agent")
+	}
+
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Error("state file should not be created on upstream error")
 	}
 }

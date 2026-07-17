@@ -119,6 +119,9 @@ func (c *ChatGPTInjector) Inject(req *http.Request) bool {
 		log.Printf("ERROR chatgpt credential initialization failed")
 		return false
 	}
+	if c.document.tokens.RefreshToken == "" {
+		return false
+	}
 	if c.needsRefreshLocked() {
 		if err := c.refreshLocked(); err != nil {
 			log.Printf("ERROR chatgpt credential refresh failed")
@@ -147,16 +150,16 @@ func (c *ChatGPTInjector) ensureLoadedLocked() error {
 	}
 	c.loaded = true
 
-	if c.config.AuthPath == "" {
+	if c.config.AuthPath == "" && c.config.StatePath == "" {
 		c.loadErr = errors.New("auth source is not configured")
 		return c.loadErr
 	}
-	if c.config.StatePath != "" && samePath(c.config.AuthPath, c.config.StatePath) {
+	if c.config.AuthPath != "" && c.config.StatePath != "" && samePath(c.config.AuthPath, c.config.StatePath) {
 		c.loadErr = errors.New("auth source and state paths must differ")
 		return c.loadErr
 	}
 
-	path := c.config.AuthPath
+	path := ""
 	if c.config.StatePath != "" {
 		if _, err := os.Stat(c.config.StatePath); err == nil {
 			path = c.config.StatePath
@@ -165,7 +168,16 @@ func (c *ChatGPTInjector) ensureLoadedLocked() error {
 			return c.loadErr
 		}
 	}
+	if path == "" {
+		path = c.config.AuthPath
+	}
+	if path == "" {
+		return nil
+	}
+	return c.loadFromFileLocked(path)
+}
 
+func (c *ChatGPTInjector) loadFromFileLocked(path string) error {
 	data, err := readPrivateSecretFile(path)
 	if err != nil {
 		c.loadErr = errors.New("auth file is unavailable or has insecure permissions")
@@ -285,6 +297,66 @@ func (c *ChatGPTInjector) refreshLocked() error {
 	if c.expiresAt.IsZero() && refreshed.ExpiresIn > 0 {
 		c.expiresAt = c.config.Now().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
 	}
+	return nil
+}
+
+// AcceptLoginTokens processes a successful login exchange response,
+// persists the real tokens to StatePath, and updates in-memory state.
+func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var raw struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(responseBody, &raw); err != nil || raw.AccessToken == "" || raw.RefreshToken == "" {
+		return errors.New("login response is malformed or incomplete")
+	}
+
+	tokens := chatGPTTokens{
+		AccessToken:  raw.AccessToken,
+		RefreshToken: raw.RefreshToken,
+		IDToken:      raw.IDToken,
+	}
+	doc := chatGPTDocument{
+		fields: make(map[string]json.RawMessage),
+		tokens: tokens,
+	}
+	authMode, _ := json.Marshal(chatGPTDefaultAuthMode)
+	doc.fields["auth_mode"] = authMode
+	rawTokens, err := json.Marshal(tokens)
+	if err != nil {
+		return errors.New("marshal login tokens")
+	}
+	doc.fields["tokens"] = rawTokens
+	lastRefresh, _ := json.Marshal(c.config.Now().UTC().Format(time.RFC3339))
+	doc.fields["last_refresh"] = lastRefresh
+
+	if doc.accountID() == "" {
+		return errors.New("login response missing account id")
+	}
+
+	if c.config.StatePath == "" {
+		return errors.New("state path not configured")
+	}
+	data, err := json.Marshal(doc.fields)
+	if err != nil {
+		return errors.New("marshal login state")
+	}
+	if err := atomicWritePrivateSecret(c.config.StatePath, data); err != nil {
+		return errors.New("persist login state")
+	}
+
+	c.document = doc
+	c.expiresAt = jwtExpiry(raw.AccessToken)
+	if c.expiresAt.IsZero() && raw.ExpiresIn > 0 {
+		c.expiresAt = c.config.Now().Add(time.Duration(raw.ExpiresIn) * time.Second)
+	}
+	c.loaded = true
+	c.loadErr = nil
 	return nil
 }
 
