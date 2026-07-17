@@ -13,7 +13,8 @@ import (
 )
 
 // errorResponse creates an HTTP error response with plain text content.
-func errorResponse(statusCode int, message string) *http.Response {
+// req must be non-nil so goproxy can read resp.Request in HTTPS/MITM paths.
+func errorResponse(req *http.Request, statusCode int, message string) *http.Response {
 	return &http.Response{
 		StatusCode:    statusCode,
 		ProtoMajor:    1,
@@ -21,6 +22,7 @@ func errorResponse(statusCode int, message string) *http.Response {
 		Header:        http.Header{"Content-Type": {"text/plain"}},
 		Body:          io.NopCloser(bytes.NewReader([]byte(message))),
 		ContentLength: int64(len(message)),
+		Request:       req,
 	}
 }
 
@@ -142,7 +144,7 @@ func IsChatGPTTokenExchange(req *http.Request) bool {
 func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	if req == nil || req.URL == nil {
 		log.Printf("DEFENSIVE_CHECK: HandleTokenExchange called with nil request or URL")
-		return errorResponse(http.StatusBadRequest, "Malformed token exchange request")
+		return errorResponse(req, http.StatusBadRequest, "Malformed token exchange request")
 	}
 
 	var resp *tokenResponse
@@ -155,12 +157,12 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	} else if tv.chatGPTEnabled && IsChatGPTTokenExchange(req) {
 		bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
 		if err != nil {
-			return errorResponse(http.StatusBadRequest, "Failed to read request body")
+			return errorResponse(req, http.StatusBadRequest, "Failed to read request body")
 		}
 
 		values, err := url.ParseQuery(string(bodyBytes))
 		if err != nil {
-			return errorResponse(http.StatusBadRequest, "Malformed form body")
+			return errorResponse(req, http.StatusBadRequest, "Malformed form body")
 		}
 		grantType := values.Get("grant_type")
 
@@ -176,7 +178,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("ERROR token vendor: marshal response: %v", err)
-		return errorResponse(http.StatusInternalServerError, "Internal token vendor error")
+		return errorResponse(req, http.StatusInternalServerError, "Internal token vendor error")
 	}
 
 	log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
@@ -195,19 +197,19 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Values) *http.Response {
 	if tv.chatGPTInjector == nil {
 		log.Printf("ERROR login exchange: no ChatGPT injector configured")
-		return errorResponse(http.StatusInternalServerError, "Internal proxy error")
+		return errorResponse(req, http.StatusInternalServerError, "Internal proxy error")
 	}
 
 	sanitized, err := sanitizeLoginForm(agentValues, tv.chatGPTInjector.config.ClientID)
 	if err != nil {
 		log.Printf("LOGIN_SANITIZE rejected request: %v", err)
-		return errorResponse(http.StatusBadRequest, "Invalid login exchange request")
+		return errorResponse(req, http.StatusBadRequest, "Invalid login exchange request")
 	}
 
 	forwardReq, err := http.NewRequest(http.MethodPost, chatGPTTokenURL, strings.NewReader(sanitized.Encode()))
 	if err != nil {
 		log.Printf("ERROR login exchange: construct forward request")
-		return errorResponse(http.StatusInternalServerError, "Internal proxy error")
+		return errorResponse(req, http.StatusInternalServerError, "Internal proxy error")
 	}
 	forwardReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -215,13 +217,13 @@ func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Va
 	upstreamResp, err := httpClient.Do(forwardReq)
 	if err != nil {
 		log.Printf("ERROR login exchange: upstream request failed")
-		return errorResponse(http.StatusBadGateway, "Login exchange failed")
+		return errorResponse(req, http.StatusBadGateway, "Login exchange failed")
 	}
 	defer upstreamResp.Body.Close()
 
 	upstreamBody, err := io.ReadAll(io.LimitReader(upstreamResp.Body, 1<<20))
 	if err != nil {
-		return errorResponse(http.StatusBadGateway, "Login exchange response unreadable")
+		return errorResponse(req, http.StatusBadGateway, "Login exchange response unreadable")
 	}
 
 	if upstreamResp.StatusCode < http.StatusOK || upstreamResp.StatusCode >= http.StatusMultipleChoices {
@@ -243,7 +245,7 @@ func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Va
 
 	if err := tv.chatGPTInjector.AcceptLoginTokens(upstreamBody); err != nil {
 		log.Printf("ERROR login exchange: token acceptance failed")
-		return errorResponse(http.StatusInternalServerError, "Login token processing failed")
+		return errorResponse(req, http.StatusInternalServerError, "Login token processing failed")
 	}
 
 	log.Printf("TOKEN_VEND host=%s path=%s (login exchange completed, real tokens persisted, synthetic response returned)", req.URL.Host, req.URL.Path)
