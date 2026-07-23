@@ -296,6 +296,10 @@ func (cf *ClientFilter) String() string {
 // Intentionally vague to avoid revealing why the request was blocked.
 const rejectMsg = "Request blocked by proxy policy"
 
+// credInjectedFlag is stored in ctx.UserData after successful credential
+// injection so the OnResponse handler can log upstream errors for those requests.
+type credInjectedFlag struct{}
+
 // Config holds proxy configuration.
 type Config struct {
 	ListenAddr    string
@@ -482,6 +486,8 @@ func New(cfg Config) *http.Server {
 			// Inject credentials for API requests
 			if cfg.CredStore != nil {
 				switch cfg.CredStore.InjectCredentials(req) {
+				case credentials.InjectOK:
+					ctx.UserData = credInjectedFlag{}
 				case credentials.InjectAuthRequired:
 					return req, goproxy.NewResponse(req,
 						goproxy.ContentTypeText,
@@ -502,6 +508,25 @@ func New(cfg Config) *http.Server {
 			req.Header.Del("X-Forwarded-For")
 
 			return req, nil
+		},
+	)
+
+	// Log upstream error responses for credential-injected requests.
+	// This distinguishes proxy-generated errors from upstream errors.
+	proxy.OnResponse().DoFunc(
+		func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			if resp != nil && ctx.UserData != nil && resp.StatusCode >= 400 {
+				var host, method, path string
+				if ctx.Req != nil {
+					method = ctx.Req.Method
+					if ctx.Req.URL != nil {
+						host = ctx.Req.URL.Host
+						path = ctx.Req.URL.Path
+					}
+				}
+				log.Printf("UPSTREAM_ERROR host=%s status=%d method=%s path=%s", host, resp.StatusCode, method, path)
+			}
+			return resp
 		},
 	)
 

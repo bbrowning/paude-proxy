@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/bbrowning/paude-proxy/internal/timeouts"
 	"golang.org/x/oauth2"
@@ -64,6 +65,7 @@ func (g *GCloudInjector) init() error {
 		httpClient := &http.Client{
 			Timeout: timeouts.ResponseHeader,
 			Transport: &http.Transport{
+				Proxy:             nil, // token refresh must go directly to Google, never through HTTP_PROXY
 				DisableKeepAlives: true,
 				TLSClientConfig: &tls.Config{
 					MinVersion: tls.VersionTLS12,
@@ -108,9 +110,16 @@ func (g *GCloudInjector) Inject(req *http.Request) InjectResult {
 	}
 
 	if !token.Valid() {
-		log.Printf("WARN gcloud token is invalid after refresh")
+		log.Printf("WARN gcloud token is invalid after refresh (length=%d)", len(token.AccessToken))
 		return InjectFailed
 	}
+
+	if token.AccessToken == SyntheticToken || len(token.AccessToken) < 20 {
+		log.Printf("ERROR gcloud token looks like a dummy/synthetic token (length=%d) — will cause upstream 401. Check if proxy's own HTTP traffic is routing through itself (HTTP_PROXY env var set on proxy container?)", len(token.AccessToken))
+		return InjectFailed
+	}
+
+	log.Printf("GCLOUD_TOKEN_DEBUG length=%d type=%q expiry=%s", len(token.AccessToken), token.TokenType, token.Expiry.UTC().Format(time.RFC3339))
 
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	return InjectOK

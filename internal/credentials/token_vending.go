@@ -150,7 +150,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 	var resp *tokenResponse
 	if tv.googleEnabled && IsTokenExchange(req) {
 		resp = &tokenResponse{
-			AccessToken: "paude-proxy-managed",
+			AccessToken: SyntheticToken,
 			ExpiresIn:   3600,
 			TokenType:   "Bearer",
 		}

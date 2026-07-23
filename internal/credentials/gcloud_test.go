@@ -60,3 +60,44 @@ func TestGCloudInjectorFromJSON_NilHeader(t *testing.T) {
 		t.Error("request with nil Header should not succeed")
 	}
 }
+
+func TestGCloudInjector_NeverReturnsInjectAuthRequired(t *testing.T) {
+	tests := []struct {
+		name     string
+		injector *GCloudInjector
+		req      *http.Request
+	}{
+		{
+			name:     "nil request",
+			injector: NewGCloudInjector("/nonexistent/path"),
+			req:      nil,
+		},
+		{
+			name:     "init failure from bad path",
+			injector: NewGCloudInjector("/nonexistent/path"),
+			req:      &http.Request{Header: make(http.Header)},
+		},
+		{
+			name:     "init failure from invalid JSON",
+			injector: NewGCloudInjectorFromJSON([]byte("not valid json")),
+			req:      &http.Request{Header: make(http.Header)},
+		},
+		{
+			name:     "init failure from empty JSON",
+			injector: NewGCloudInjectorFromJSON([]byte("{}")),
+			req:      &http.Request{Header: make(http.Header)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.injector.Inject(tt.req)
+			if result == InjectAuthRequired {
+				t.Error("GCloudInjector must never return InjectAuthRequired — only ChatGPTInjector should")
+			}
+			if result != InjectFailed {
+				t.Errorf("expected InjectFailed, got %d", result)
+			}
+		})
+	}
+}
