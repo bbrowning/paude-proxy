@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -36,10 +37,11 @@ type CredentialEntry struct {
 }
 
 var validInjectorTypes = map[string]bool{
-	"bearer":  true,
-	"api_key": true,
-	"gcloud":  true,
-	"chatgpt": true,
+	"bearer":          true,
+	"api_key":         true,
+	"gcloud":          true,
+	"chatgpt":         true,
+	"anthropic_oauth": true,
 }
 
 // ParseConfig parses and validates a credential config from JSON bytes.
@@ -54,7 +56,12 @@ func ParseConfig(data []byte) (*CredentialConfig, error) {
 			return nil, fmt.Errorf("credential entry %d: env_var is required", i)
 		}
 		if !validInjectorTypes[entry.InjectorType] {
-			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: bearer, api_key, gcloud, chatgpt)", i, entry.EnvVar, entry.InjectorType)
+			validTypes := make([]string, 0, len(validInjectorTypes))
+			for k := range validInjectorTypes {
+				validTypes = append(validTypes, k)
+			}
+			sort.Strings(validTypes)
+			return nil, fmt.Errorf("credential entry %d (%s): invalid injector type %q (valid: %s)", i, entry.EnvVar, entry.InjectorType, strings.Join(validTypes, ", "))
 		}
 		if len(entry.Domains) == 0 {
 			return nil, fmt.Errorf("credential entry %d (%s): at least one domain is required", i, entry.EnvVar)
@@ -159,6 +166,17 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 			tokenVendor.chatGPTEnabled = true
 			tokenVendor.chatGPTInjector = chatGPTInjector
 			log.Println("Token vendor: ENABLED (returns dummy tokens for auth.openai.com/oauth/token)")
+		case "anthropic_oauth":
+			anthInjector := NewAnthropicOAuthInjector(value)
+			if !anthInjector.Available() {
+				log.Printf("WARN: anthropic oauth creds not loadable")
+				continue
+			}
+			injector = anthInjector
+			tokenVendor = ensureTokenVendor(tokenVendor)
+			tokenVendor.anthropicEnabled = true
+			tokenVendor.anthropicInjector = anthInjector
+			log.Println("Token vendor: ENABLED (returns dummy tokens for Anthropic OAuth endpoints)")
 		}
 
 		for _, domain := range entry.Domains {
@@ -175,6 +193,9 @@ func BuildFromConfig(cfg *CredentialConfig) (*Store, *TokenVendor, map[string][]
 			// Token vending is a separate route and must also be allowed by the
 			// proxy's domain allowlist.
 			domainMap[entry.EnvVar] = append(domainMap[entry.EnvVar], "auth.openai.com")
+		}
+		if entry.InjectorType == "anthropic_oauth" {
+			domainMap[entry.EnvVar] = append(domainMap[entry.EnvVar], "console.anthropic.com", "platform.claude.com")
 		}
 
 		domainDesc := formatDomains(entry.Domains)
@@ -211,6 +232,8 @@ func injectorDescription(entry CredentialEntry) string {
 		return "gcloud ADC Bearer token"
 	case "chatgpt":
 		return "ChatGPT OAuth Bearer token"
+	case "anthropic_oauth":
+		return "Anthropic OAuth Bearer token"
 	default:
 		return entry.InjectorType
 	}

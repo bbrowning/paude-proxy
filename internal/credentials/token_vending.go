@@ -26,6 +26,23 @@ func errorResponse(req *http.Request, statusCode int, message string) *http.Resp
 	}
 }
 
+func jsonOKResponse(req *http.Request, payload any) *http.Response {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("ERROR token vendor: marshal response: %v", err)
+		return errorResponse(req, http.StatusInternalServerError, "Internal token vendor error")
+	}
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"application/json"}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       req,
+	}
+}
+
 // TokenVendor intercepts the configured OAuth2 token exchanges from the
 // agent and returns synthetic tokens.
 //
@@ -38,9 +55,11 @@ func errorResponse(req *http.Request, statusCode int, message string) *http.Resp
 // This means the agent never sees any real credential — not the refresh token,
 // not the service account key, and not even a short-lived access token.
 type TokenVendor struct {
-	googleEnabled   bool
-	chatGPTEnabled  bool
-	chatGPTInjector *ChatGPTInjector
+	googleEnabled     bool
+	chatGPTEnabled    bool
+	chatGPTInjector   *ChatGPTInjector
+	anthropicEnabled  bool
+	anthropicInjector *AnthropicOAuthInjector
 }
 
 // NewTokenVendor creates a token vendor.
@@ -138,6 +157,17 @@ func IsChatGPTTokenExchange(req *http.Request) bool {
 		req.URL.Path == "/oauth/token"
 }
 
+// IsAnthropicTokenExchange returns true for Anthropic's OAuth token endpoints.
+func IsAnthropicTokenExchange(req *http.Request) bool {
+	if req == nil || req.URL == nil || req.Method != http.MethodPost {
+		return false
+	}
+	host := req.URL.Hostname()
+	path := req.URL.Path
+	return (strings.EqualFold(host, "console.anthropic.com") && path == "/v1/oauth/token") ||
+		(strings.EqualFold(host, "platform.claude.com") && path == "/api/oauth/token")
+}
+
 // HandleTokenExchange responds to an OAuth2 token exchange request with
 // a dummy access token. The real token injection happens later via the
 // GCloudInjector when the agent makes API calls to *.googleapis.com.
@@ -147,13 +177,13 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 		return errorResponse(req, http.StatusBadRequest, "Malformed token exchange request")
 	}
 
-	var resp *tokenResponse
 	if tv.googleEnabled && IsTokenExchange(req) {
-		resp = &tokenResponse{
+		log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
+		return jsonOKResponse(req, &tokenResponse{
 			AccessToken: SyntheticToken,
 			ExpiresIn:   3600,
 			TokenType:   "Bearer",
-		}
+		})
 	} else if tv.chatGPTEnabled && IsChatGPTTokenExchange(req) {
 		bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
 		if err != nil {
@@ -171,27 +201,10 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 			return syntheticChatGPTResponse(req)
 		}
 		return tv.handleLoginExchange(req, values)
-	} else {
-		return nil
+	} else if tv.anthropicEnabled && IsAnthropicTokenExchange(req) {
+		return tv.handleAnthropicTokenExchange(req)
 	}
-
-	body, err := json.Marshal(resp)
-	if err != nil {
-		log.Printf("ERROR token vendor: marshal response: %v", err)
-		return errorResponse(req, http.StatusInternalServerError, "Internal token vendor error")
-	}
-
-	log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
-
-	return &http.Response{
-		StatusCode:    http.StatusOK,
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        http.Header{"Content-Type": {"application/json"}},
-		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
-		Request:       req,
-	}
+	return nil
 }
 
 func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Values) *http.Response {
@@ -253,23 +266,49 @@ func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Va
 }
 
 func syntheticChatGPTResponse(req *http.Request) *http.Response {
-	resp := &tokenResponse{
+	return jsonOKResponse(req, &tokenResponse{
 		AccessToken:  "paude-proxy-managed-access",
 		RefreshToken: "paude-proxy-managed-refresh",
 		IDToken:      syntheticChatGPTIDToken(),
 		ExpiresIn:    3600,
 		TokenType:    "Bearer",
+	})
+}
+
+func (tv *TokenVendor) handleAnthropicTokenExchange(req *http.Request) *http.Response {
+	bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
+		return errorResponse(req, http.StatusBadRequest, "Failed to read request body")
 	}
-	body, _ := json.Marshal(resp)
-	return &http.Response{
-		StatusCode:    http.StatusOK,
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        http.Header{"Content-Type": {"application/json"}},
-		Body:          io.NopCloser(bytes.NewReader(body)),
-		ContentLength: int64(len(body)),
-		Request:       req,
+
+	var body struct {
+		GrantType string `json:"grant_type"`
+		ClientID  string `json:"client_id"`
 	}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		return errorResponse(req, http.StatusBadRequest, "Malformed JSON body")
+	}
+
+	if body.GrantType != "refresh_token" {
+		log.Printf("TOKEN_VEND host=%s path=%s (rejected non-refresh grant_type %q)", req.URL.Host, req.URL.Path, body.GrantType)
+		return errorResponse(req, http.StatusBadRequest, "Unsupported grant type")
+	}
+
+	if tv.anthropicInjector != nil && body.ClientID != "" {
+		tv.anthropicInjector.SetClientID(body.ClientID)
+	}
+
+	log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
+	return syntheticAnthropicResponse(req)
+}
+
+func syntheticAnthropicResponse(req *http.Request) *http.Response {
+	return jsonOKResponse(req, &tokenResponse{
+		AccessToken:  SyntheticToken,
+		RefreshToken: SyntheticToken,
+		ExpiresIn:    3600,
+		TokenType:    "Bearer",
+	})
 }
 
 func syntheticChatGPTIDToken() string {

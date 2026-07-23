@@ -44,7 +44,8 @@ func TestParseConfig_AllInjectorTypes(t *testing.T) {
 			{"env_var": "A", "injector": "bearer", "domains": [".a.com"]},
 			{"env_var": "B", "injector": "api_key", "params": {"header_name": "x-key"}, "domains": [".b.com"]},
 			{"env_var": "C", "injector": "bearer", "domains": ["c.com"]},
-			{"env_var": "D", "injector": "gcloud", "domains": [".d.com"]}
+			{"env_var": "D", "injector": "gcloud", "domains": [".d.com"]},
+			{"env_var": "E", "injector": "anthropic_oauth", "domains": [".e.com"]}
 		]
 	}`)
 
@@ -52,8 +53,8 @@ func TestParseConfig_AllInjectorTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.Credentials) != 4 {
-		t.Fatalf("got %d entries, want 4", len(cfg.Credentials))
+	if len(cfg.Credentials) != 5 {
+		t.Fatalf("got %d entries, want 5", len(cfg.Credentials))
 	}
 }
 
@@ -117,8 +118,8 @@ func TestLoadDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
-	if len(cfg.Credentials) != 6 {
-		t.Errorf("default config has %d entries, want 6", len(cfg.Credentials))
+	if len(cfg.Credentials) != 7 {
+		t.Errorf("default config has %d entries, want 7", len(cfg.Credentials))
 	}
 
 	// Verify the expected entries are present
@@ -126,7 +127,7 @@ func TestLoadDefaultConfig(t *testing.T) {
 	for _, entry := range cfg.Credentials {
 		envVars[entry.EnvVar] = true
 	}
-	for _, expected := range []string{"ANTHROPIC_API_KEY", "CHATGPT_AUTH_FILE", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
+	for _, expected := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_CREDS_FILE", "CHATGPT_AUTH_FILE", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
 		if !envVars[expected] {
 			t.Errorf("default config missing entry for %s", expected)
 		}
@@ -660,5 +661,85 @@ func TestBuildFromConfig_ChatGPT_WhamEndpoint(t *testing.T) {
 	}
 	if req.Header.Get("ChatGPT-Account-ID") != "acct-123" {
 		t.Errorf("ChatGPT-Account-ID = %q, want %q", req.Header.Get("ChatGPT-Account-ID"), "acct-123")
+	}
+}
+
+func TestBuildFromConfig_AnthropicOAuth(t *testing.T) {
+	dir := t.TempDir()
+	expiresAt := time.Now().Add(time.Hour).UnixMilli()
+	credsPath := writeAnthropicCreds(t, dir, "test-access", "test-refresh", expiresAt)
+	t.Setenv("ANTHROPIC_OAUTH_CREDS_FILE", credsPath)
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "ANTHROPIC_OAUTH_CREDS_FILE",
+			InjectorType: "anthropic_oauth",
+			Domains:      []string{"api.anthropic.com", ".claude.ai"},
+		},
+	}}
+	store, tokenVendor, domainMap := BuildFromConfig(cfg)
+	if tokenVendor == nil {
+		t.Fatal("Anthropic OAuth token vendor should be enabled")
+	}
+	if !tokenVendor.anthropicEnabled {
+		t.Error("anthropicEnabled should be true")
+	}
+	if tokenVendor.anthropicInjector == nil {
+		t.Error("anthropicInjector should be wired to token vendor")
+	}
+	got := domainMap["ANTHROPIC_OAUTH_CREDS_FILE"]
+	if len(got) < 4 {
+		t.Fatalf("domain map = %v, want API domains + token endpoint domains", got)
+	}
+	hasConsole, hasPlatform := false, false
+	for _, d := range got {
+		if d == "console.anthropic.com" {
+			hasConsole = true
+		}
+		if d == "platform.claude.com" {
+			hasPlatform = true
+		}
+	}
+	if !hasConsole || !hasPlatform {
+		t.Errorf("domain map = %v, should include console.anthropic.com and platform.claude.com", got)
+	}
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "api.anthropic.com"},
+		Header: make(http.Header),
+	}
+	if result := store.InjectCredentials(req); result != InjectOK {
+		t.Fatal("Anthropic OAuth route should inject for api.anthropic.com")
+	}
+	if req.Header.Get("Authorization") != "Bearer test-access" {
+		t.Errorf("Authorization = %q, want %q", req.Header.Get("Authorization"), "Bearer test-access")
+	}
+
+	req2 := &http.Request{
+		URL:    &url.URL{Host: "app.claude.ai"},
+		Header: make(http.Header),
+	}
+	if result := store.InjectCredentials(req2); result != InjectOK {
+		t.Fatal("Anthropic OAuth route should inject for app.claude.ai")
+	}
+}
+
+func TestBuildFromConfig_AnthropicOAuth_EnvVarUnset(t *testing.T) {
+	t.Setenv("ANTHROPIC_OAUTH_CREDS_FILE", "")
+	os.Unsetenv("ANTHROPIC_OAUTH_CREDS_FILE")
+
+	cfg := &CredentialConfig{Credentials: []CredentialEntry{
+		{
+			EnvVar:       "ANTHROPIC_OAUTH_CREDS_FILE",
+			InjectorType: "anthropic_oauth",
+			Domains:      []string{"api.anthropic.com", ".claude.ai"},
+		},
+	}}
+	_, tokenVendor, domainMap := BuildFromConfig(cfg)
+	if tokenVendor != nil && tokenVendor.anthropicEnabled {
+		t.Error("neither env var set should not enable Anthropic OAuth token vending")
+	}
+	if _, ok := domainMap["ANTHROPIC_OAUTH_CREDS_FILE"]; ok {
+		t.Error("domain map should not contain entry for unset env var")
 	}
 }
