@@ -23,8 +23,7 @@ make integration-test  # integration tests only (-race)
 ## Other Checks
 
 ```bash
-make lint        # go vet
-make fmt-check   # verify gofmt formatting
+make lint        # golangci-lint (includes go vet, gofmt, and more)
 make build       # build binary to bin/paude-proxy
 make docker      # build container image with podman
 ```
