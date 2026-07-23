@@ -11,7 +11,7 @@ AI coding agents (Claude Code, Cursor, Gemini CLI) run in isolated containers. T
 ```bash
 make build        # Build binary to bin/paude-proxy
 make test         # Run all tests
-make lint         # go vet
+make lint         # golangci-lint (install via make install-hooks)
 make docker       # Build container image with podman
 ```
 
