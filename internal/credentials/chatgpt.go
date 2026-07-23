@@ -87,6 +87,7 @@ func NewChatGPTInjectorWithConfig(config ChatGPTOAuthConfig) *ChatGPTInjector {
 		config.HTTPClient = &http.Client{
 			Timeout: timeouts.ResponseHeader,
 			Transport: &http.Transport{
+				Proxy:                 nil, // token refresh must go directly to auth.openai.com, never through HTTP_PROXY
 				TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 				TLSHandshakeTimeout:   timeouts.TLSHandshake,
 				ResponseHeaderTimeout: timeouts.ResponseHeader,

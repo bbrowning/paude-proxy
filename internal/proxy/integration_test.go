@@ -868,6 +868,9 @@ func TestIntegration_CredentialInjectionFailure_Returns502(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("expected 502 Bad Gateway, got %d", resp.StatusCode)
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Errorf("credential injection failure must never produce 401 Unauthorized")
+	}
 
 	body, _ := io.ReadAll(resp.Body)
 	if got := string(body); got != "Proxy credential injection failed" {
@@ -1068,5 +1071,73 @@ func TestIntegration_ChatGPTLoginSanitizeReject_HTTPS(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestIntegration_UpstreamErrorPassesThrough(t *testing.T) {
+	skipIntegration(t)
+
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{"429 rate limit", http.StatusTooManyRequests, `{"error":{"code":429,"message":"Rate limit exceeded"}}`},
+		{"500 internal error", http.StatusInternalServerError, `{"error":{"code":500,"message":"Internal server error"}}`},
+		{"503 service unavailable", http.StatusServiceUnavailable, `{"error":{"code":503,"message":"Service unavailable"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer upstream.Close()
+
+			upstreamURL, _ := url.Parse(upstream.URL)
+			upstreamHostname := upstreamURL.Hostname()
+
+			df := filter.NewDomainFilter(upstreamHostname)
+
+			store := credentials.NewStore()
+			store.AddRoute(credentials.Route{
+				ExactDomain: upstreamHostname,
+				Injector:    &credentials.BearerInjector{Token: "test-secret-key"},
+			})
+
+			upstreamCAs := upstreamCertPool(t, upstream)
+			upstreamCert := upstream.TLS.Certificates[0]
+			upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+			proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+			defer cleanup()
+
+			client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+
+			resp, err := client.Get(upstream.URL + "/test")
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tt.statusCode {
+				t.Errorf("expected upstream status %d to pass through, got %d", tt.statusCode, resp.StatusCode)
+			}
+			if resp.StatusCode == http.StatusUnauthorized {
+				t.Errorf("upstream %d must never be converted to 401", tt.statusCode)
+			}
+
+			body, _ := io.ReadAll(resp.Body)
+			if string(body) != tt.body {
+				t.Errorf("response body not passed through unchanged\ngot:  %s\nwant: %s", body, tt.body)
+			}
+		})
 	}
 }

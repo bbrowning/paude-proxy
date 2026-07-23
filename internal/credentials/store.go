@@ -7,6 +7,11 @@ import (
 	"sync"
 )
 
+// SyntheticToken is the dummy access token returned by the token vendor to
+// agents. The GCloudInjector checks for this value to detect accidental
+// self-proxying (token refresh routing through the proxy's own token vendor).
+const SyntheticToken = "paude-proxy-managed"
+
 // InjectResult describes the outcome of a credential injection attempt.
 type InjectResult int
 
