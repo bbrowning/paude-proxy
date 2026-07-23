@@ -477,7 +477,7 @@ func New(cfg Config) *http.Server {
 			}
 
 			// Intercept OAuth2 token exchange requests.
-			if cfg.TokenVendor != nil && (credentials.IsTokenExchange(req) || credentials.IsChatGPTTokenExchange(req)) {
+			if cfg.TokenVendor != nil {
 				if resp := cfg.TokenVendor.HandleTokenExchange(req); resp != nil {
 					return req, resp
 				}

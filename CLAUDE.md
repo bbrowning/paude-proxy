@@ -77,6 +77,7 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing JSON config | (embedded default) |
 | `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
+| `ANTHROPIC_OAUTH_CREDS_FILE` | Path to Anthropic OAuth credentials JSON file | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |
 | `OPENAI_API_KEY` | -> `Authorization: Bearer` for `*.openai.com` | |
 | `CURSOR_API_KEY` | -> `Authorization: Bearer` for `*.cursor.com`, `*.cursorapi.com` | |
@@ -90,6 +91,7 @@ The default credential routing is defined in `internal/credentials/credentials.j
 
 | Domain Pattern | Header Injected | Source |
 |---|---|---|
+| `api.anthropic.com`, `*.claude.ai` | `Authorization: Bearer <token>` | Anthropic OAuth (auto-refresh) |
 | `*.anthropic.com` | `x-api-key: <key>` | `ANTHROPIC_API_KEY` |
 | `*.openai.com` | `Authorization: Bearer <key>` | `OPENAI_API_KEY` |
 | `*.cursor.com`, `*.cursorapi.com` | `Authorization: Bearer <key>` | `CURSOR_API_KEY` |
@@ -132,6 +134,26 @@ The agent never sees any real credential — not the refresh token, not the serv
 
 Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY`. The orchestrator provides a dummy `CURSOR_API_KEY=paude-proxy-managed`. The proxy overrides the auth header.
 
+### Anthropic OAuth (Claude subscription)
+
+The orchestrator provides the proxy with a credentials file (path via `ANTHROPIC_OAUTH_CREDS_FILE`) matching Claude Code's `~/.claude/.credentials.json` format:
+```json
+{
+  "claudeAiOauth": {
+    "accessToken": "...",
+    "refreshToken": "...",
+    "expiresAt": 1234567890000,
+    "clientId": "...",
+    "scopes": ["..."],
+    "subscriptionType": "..."
+  }
+}
+```
+
+The `AnthropicOAuthInjector` handles its own token refresh internally — POSTing JSON to the Anthropic OAuth token endpoint (`console.anthropic.com/v1/oauth/token`) with the real refresh token. Rotated tokens are persisted atomically back to the creds file, preserving non-token fields (scopes, subscriptionType).
+
+When the agent's Claude auth library tries to refresh its dummy token (POST to `console.anthropic.com/v1/oauth/token` or `platform.claude.com/api/oauth/token`), the token vendor intercepts and returns a synthetic token. The agent uses this dummy token in API calls, and the injector overrides it with a real token at request time.
+
 ### What agents see vs what's real
 
 | What agent has | What proxy injects |
@@ -140,6 +162,7 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 | `OPENAI_API_KEY=paude-proxy-managed` | Real `Authorization: Bearer sk-...` |
 | `GH_TOKEN=paude-proxy-managed` | Real `Authorization: Bearer ghp_...` |
 | Stub ADC with dummy refresh_token | Dummy token from vendor, real token injected at API call time |
+| Anthropic OAuth creds with dummy tokens | Dummy token from vendor, real OAuth token injected at API call time |
 
 ## Project Layout
 
@@ -155,7 +178,8 @@ Cursor uses auth tokens from `~/.config/cursor/auth.json` and/or `CURSOR_API_KEY
 - `internal/credentials/store_test.go` — tests for routing, override behavior, first-match-wins
 - `internal/credentials/static.go` — always-override injectors: Bearer, API key, generic header
 - `internal/credentials/gcloud.go` — gcloud ADC OAuth2 token refresh via `golang.org/x/oauth2/google`
-- `internal/credentials/token_vending.go` — intercepts `POST oauth2.googleapis.com/token`, returns dummy tokens
+- `internal/credentials/anthropic_oauth.go` — Anthropic OAuth2 token refresh and Bearer injection for Claude subscription tokens
+- `internal/credentials/token_vending.go` — intercepts OAuth token exchanges (Google, ChatGPT, Anthropic), returns dummy tokens
 - `Dockerfile` — multi-stage build (Go builder + CentOS Stream 10 runtime with dnsmasq + tini)
 - `entrypoint.sh` — starts dnsmasq for DNS forwarding, then runs paude-proxy
 

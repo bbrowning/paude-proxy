@@ -277,6 +277,116 @@ func TestChatGPTTokenVendor_LoginExchange_RejectsUnknownGrantType(t *testing.T) 
 	}
 }
 
+func TestIsAnthropicTokenExchange_ConsoleEndpoint(t *testing.T) {
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "console.anthropic.com", Path: "/v1/oauth/token"},
+	}
+	if !IsAnthropicTokenExchange(req) {
+		t.Error("should match console.anthropic.com/v1/oauth/token")
+	}
+}
+
+func TestIsAnthropicTokenExchange_PlatformEndpoint(t *testing.T) {
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "platform.claude.com", Path: "/api/oauth/token"},
+	}
+	if !IsAnthropicTokenExchange(req) {
+		t.Error("should match platform.claude.com/api/oauth/token")
+	}
+}
+
+func TestIsAnthropicTokenExchange_WithPort(t *testing.T) {
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "console.anthropic.com:443", Path: "/v1/oauth/token"},
+	}
+	if !IsAnthropicTokenExchange(req) {
+		t.Error("should match console.anthropic.com:443")
+	}
+}
+
+func TestIsAnthropicTokenExchange_NonMatching(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		host   string
+		path   string
+	}{
+		{"GET method", http.MethodGet, "console.anthropic.com", "/v1/oauth/token"},
+		{"wrong host", http.MethodPost, "api.anthropic.com", "/v1/oauth/token"},
+		{"wrong path", http.MethodPost, "console.anthropic.com", "/v2/oauth/token"},
+		{"nil request", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "nil request" {
+				if IsAnthropicTokenExchange(nil) {
+					t.Error("nil request should return false")
+				}
+				return
+			}
+			req := &http.Request{
+				Method: tc.method,
+				URL:    &url.URL{Host: tc.host, Path: tc.path},
+			}
+			if IsAnthropicTokenExchange(req) {
+				t.Errorf("should not match %s %s%s", tc.method, tc.host, tc.path)
+			}
+		})
+	}
+}
+
+func TestAnthropicTokenVendor_RefreshToken_ReturnsSynthetic(t *testing.T) {
+	injector := NewAnthropicOAuthInjector(filepath.Join(t.TempDir(), "creds.json"))
+	vendor := &TokenVendor{anthropicEnabled: true, anthropicInjector: injector}
+
+	body, _ := json.Marshal(map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": "dummy-refresh",
+		"client_id":     "test-client-id",
+	})
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "console.anthropic.com", Path: "/v1/oauth/token"},
+		Body:   io.NopCloser(bytes.NewReader(body)),
+	}
+	resp := vendor.HandleTokenExchange(req)
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatal("refresh_token grant should return synthetic response")
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(respBody, []byte(SyntheticToken)) {
+		t.Error("response should contain synthetic token")
+	}
+
+	injector.mu.Lock()
+	clientID := injector.config.ClientID
+	injector.mu.Unlock()
+	if clientID != "test-client-id" {
+		t.Errorf("client_id = %q, want %q (should be captured from request)", clientID, "test-client-id")
+	}
+}
+
+func TestAnthropicTokenVendor_RejectsUnknownGrantType(t *testing.T) {
+	vendor := &TokenVendor{anthropicEnabled: true}
+
+	body, _ := json.Marshal(map[string]string{
+		"grant_type": "authorization_code",
+		"code":       "test-code",
+	})
+	req := &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Host: "console.anthropic.com", Path: "/v1/oauth/token"},
+		Body:   io.NopCloser(bytes.NewReader(body)),
+	}
+	resp := vendor.HandleTokenExchange(req)
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-refresh grant should be rejected with 400, got %v", resp)
+	}
+}
+
 func TestSanitizeLoginForm(t *testing.T) {
 	cases := []struct {
 		name      string
