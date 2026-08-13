@@ -28,6 +28,15 @@ type Injector interface {
 	Inject(req *http.Request) InjectResult
 }
 
+// Refresher is implemented by injectors that can discard cached credential
+// state and force a real refresh on the next Inject call. Used to recover
+// from a credential that Inject considered locally valid but that upstream
+// rejected (e.g. a cached OAuth token whose local validity check disagreed
+// with the server's).
+type Refresher interface {
+	ForceRefresh() error
+}
+
 // Route maps a domain pattern to a credential injector.
 type Route struct {
 	// DomainSuffix matches if the hostname ends with this suffix.
@@ -76,45 +85,65 @@ func (s *Store) InjectCredentials(req *http.Request) InjectResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if req == nil || req.URL == nil {
+	route, matchedPattern, host := s.matchRoute(req)
+	if route == nil {
 		return InjectNoMatch
 	}
 
-	host := req.URL.Host
+	result := route.Injector.Inject(req)
+	switch result {
+	case InjectOK:
+		log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+	case InjectFailed:
+		log.Printf("CREDENTIAL_INJECT_FAILED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+	case InjectAuthRequired:
+		log.Printf("CREDENTIAL_AUTH_REQUIRED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
+	}
+	return result
+}
+
+// MatchInjector returns the injector that would handle req, or nil if no
+// route matches. Used by the response pipeline to retry with the same
+// injector after a forced refresh.
+func (s *Store) MatchInjector(req *http.Request) Injector {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	route, _, _ := s.matchRoute(req)
+	if route == nil {
+		return nil
+	}
+	return route.Injector
+}
+
+// matchRoute finds the first route matching req. Callers must hold s.mu
+// (read lock is sufficient). Returns the matched route, its display
+// pattern, and the normalized host, or a nil route if nothing matched.
+func (s *Store) matchRoute(req *http.Request) (route *Route, pattern string, host string) {
+	if req == nil || req.URL == nil {
+		return nil, "", ""
+	}
+
+	host = req.URL.Host
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]
 	}
 	host = strings.ToLower(host)
 
-	for _, route := range s.routes {
-		matched := false
-		matchedPattern := ""
-		pathMatched := route.PathPrefix == "" || pathMatchesPrefix(req.URL.Path, route.PathPrefix)
-		methodMatched := len(route.Methods) == 0 || route.Methods[strings.ToUpper(req.Method)]
+	for i := range s.routes {
+		r := &s.routes[i]
+		pathMatched := r.PathPrefix == "" || pathMatchesPrefix(req.URL.Path, r.PathPrefix)
+		methodMatched := len(r.Methods) == 0 || r.Methods[strings.ToUpper(req.Method)]
 
-		if pathMatched && methodMatched && route.ExactDomain != "" && host == route.ExactDomain {
-			matched = true
-			matchedPattern = route.ExactDomain
-		} else if pathMatched && methodMatched && route.DomainSuffix != "" && strings.HasSuffix(host, route.DomainSuffix) {
-			matched = true
-			matchedPattern = "*" + route.DomainSuffix
+		if pathMatched && methodMatched && r.ExactDomain != "" && host == r.ExactDomain {
+			return r, r.ExactDomain, host
 		}
-
-		if matched {
-			result := route.Injector.Inject(req)
-			switch result {
-			case InjectOK:
-				log.Printf("CREDENTIAL_INJECT host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
-			case InjectFailed:
-				log.Printf("CREDENTIAL_INJECT_FAILED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
-			case InjectAuthRequired:
-				log.Printf("CREDENTIAL_AUTH_REQUIRED host=%s pattern=%s method=%s path=%s", host, matchedPattern, req.Method, req.URL.Path)
-			}
-			return result
+		if pathMatched && methodMatched && r.DomainSuffix != "" && strings.HasSuffix(host, r.DomainSuffix) {
+			return r, "*" + r.DomainSuffix, host
 		}
 	}
 
-	return InjectNoMatch
+	return nil, "", host
 }
 
 func pathMatchesPrefix(path, prefix string) bool {

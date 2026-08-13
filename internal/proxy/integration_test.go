@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -875,6 +877,136 @@ func TestIntegration_CredentialInjectionFailure_Returns502(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if got := string(body); got != "Proxy credential injection failed" {
 		t.Errorf("expected injection failure message, got %q", got)
+	}
+}
+
+// refreshableInjector is a test double implementing both credentials.Injector
+// and credentials.Refresher. It injects "stale" until ForceRefresh is
+// called, then injects "fresh" — simulating a credential whose local
+// validity check disagreed with upstream until forced to refresh.
+type refreshableInjector struct {
+	mu        sync.Mutex
+	refreshed bool
+}
+
+func (r *refreshableInjector) Inject(req *http.Request) credentials.InjectResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.refreshed {
+		req.Header.Set("Authorization", "Bearer fresh")
+	} else {
+		req.Header.Set("Authorization", "Bearer stale")
+	}
+	return credentials.InjectOK
+}
+
+func (r *refreshableInjector) ForceRefresh() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshed = true
+	return nil
+}
+
+func TestIntegration_GCloudTokenRefreshOnUpstream401(t *testing.T) {
+	skipIntegration(t)
+
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	var hits int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if r.Header.Get("Authorization") == "Bearer fresh" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`[{"error":{"code":401,"message":"Request had invalid authentication credentials."}}]`))
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	upstreamHostname := upstreamURL.Hostname()
+
+	df := filter.NewDomainFilter(upstreamHostname)
+
+	store := credentials.NewStore()
+	store.AddRoute(credentials.Route{
+		ExactDomain: upstreamHostname,
+		Injector:    &refreshableInjector{},
+	})
+
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+	defer cleanup()
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+
+	resp, err := client.Post(upstream.URL+"/v1/generate", "application/json", strings.NewReader(`{"prompt":"hello"}`))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK after retry, got %d", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Errorf("expected upstream to be hit exactly twice (original + one retry), got %d", got)
+	}
+}
+
+func TestIntegration_NonRefreshableInjector_401PassesThroughWithoutRetry(t *testing.T) {
+	skipIntegration(t)
+
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	var hits int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	upstreamHostname := upstreamURL.Hostname()
+
+	df := filter.NewDomainFilter(upstreamHostname)
+
+	store := credentials.NewStore()
+	store.AddRoute(credentials.Route{
+		ExactDomain: upstreamHostname,
+		Injector:    &credentials.BearerInjector{Token: "bad-token"},
+	})
+
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert := upstream.TLS.Certificates[0]
+	upstreamCA, _ := x509.ParseCertificate(upstreamCert.Certificate[0])
+
+	proxyAddr, cleanup := startTestProxy(t, ca, df, store, nil, upstreamCAs)
+	defer cleanup()
+
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCA)
+
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 to pass through unmodified, got %d", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("non-refreshable injector should not trigger a retry, expected 1 hit, got %d", got)
 	}
 }
 
