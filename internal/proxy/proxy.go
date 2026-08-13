@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -487,7 +489,19 @@ func New(cfg Config) *http.Server {
 			if cfg.CredStore != nil {
 				switch cfg.CredStore.InjectCredentials(req) {
 				case credentials.InjectOK:
-					ctx.UserData = credInjectedFlag{}
+					// Buffer the body so a Refresher-backed route can be retried
+					// once after an upstream 401; abort if buffering fails.
+					if resp := prepareRefreshRetry(req, ctx, cfg.CredStore); resp != nil {
+						return req, resp
+					}
+					// Mark the request as credential-injected so the OnResponse
+					// handler logs upstream errors for it. prepareRefreshRetry may
+					// have already stashed retry state on ctx.UserData; only set
+					// the flag when it didn't, so a buffer-failure abort (UserData
+					// still nil) isn't mislogged as an upstream error.
+					if ctx.UserData == nil {
+						ctx.UserData = credInjectedFlag{}
+					}
 				case credentials.InjectAuthRequired:
 					return req, goproxy.NewResponse(req,
 						goproxy.ContentTypeText,
@@ -508,6 +522,20 @@ func New(cfg Config) *http.Server {
 			req.Header.Del("X-Forwarded-For")
 
 			return req, nil
+		},
+	)
+
+	// Retry once with a forced-fresh credential if upstream itself rejects
+	// the request as unauthorized. This recovers from a credential that
+	// InjectCredentials considered locally valid but that the real server
+	// disagreed with (e.g. a cached OAuth token whose local expiry check
+	// disagreed with Google's after a host suspend/resume cycle).
+	//
+	// Registered before the upstream-error logger below so a successful
+	// recovery replaces the 401 before it would be logged as an upstream error.
+	proxy.OnResponse(goproxy.StatusCodeIs(http.StatusUnauthorized)).DoFunc(
+		func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+			return retryWithForcedRefresh(resp, ctx, cfg.CredStore)
 		},
 	)
 
@@ -538,6 +566,132 @@ func New(cfg Config) *http.Server {
 			MinVersion: tls.VersionTLS12,
 		},
 	}
+}
+
+// refreshRetryState is stashed on ctx.UserData by prepareRefreshRetry when a
+// request was handled by a credentials.Refresher, so the response handler
+// can retry once with a forced-fresh credential after an upstream 401.
+type refreshRetryState struct {
+	injector credentials.Refresher
+	getBody  func() (io.ReadCloser, error)
+	retried  bool
+}
+
+// maxRetryBufferBytes caps how much of a request body the proxy buffers in
+// memory to enable the upstream-401 retry. Requests up to this size get the
+// forced-refresh retry safety net; larger ones (e.g. big multimodal Vertex
+// inference payloads) are still forwarded intact but stream through without
+// buffering, so they can't be retried. This bounds the memory a hostile agent
+// can force the proxy to allocate by POSTing huge bodies to a Refresher-backed
+// (*.googleapis.com) route.
+const maxRetryBufferBytes = 10 << 20 // 10 MiB
+
+// prepareRefreshRetry buffers req's body (if any) and stashes retry state on
+// ctx.UserData when the matched injector supports ForceRefresh. Buffering
+// the body is required because the original io.ReadCloser is drained by the
+// first round trip and can't be replayed as-is; it's skipped for injectors
+// that can't force-refresh, since those requests will never be retried.
+//
+// It returns a non-nil response only when buffering fails: at that point the
+// body has already been partially drained and can't be forwarded intact, so
+// the caller must abort with that response rather than send a truncated
+// request upstream. It returns nil in all other cases (proceed normally).
+func prepareRefreshRetry(req *http.Request, ctx *goproxy.ProxyCtx, store *credentials.Store) *http.Response {
+	injector, ok := store.MatchInjector(req).(credentials.Refresher)
+	if !ok {
+		return nil
+	}
+
+	if req.Body == nil || req.Body == http.NoBody {
+		ctx.UserData = &refreshRetryState{
+			injector: injector,
+			getBody:  func() (io.ReadCloser, error) { return http.NoBody, nil },
+		}
+		return nil
+	}
+
+	// Read up to the cap plus one byte so we can tell whether the body fit.
+	bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxRetryBufferBytes+1))
+	if err != nil {
+		// The body is already partially consumed; forwarding it now would
+		// send a truncated request upstream. Abort with a 502 instead.
+		req.Body.Close()
+		log.Printf("ERROR buffering request body for retry: %v", err)
+		return goproxy.NewResponse(req,
+			goproxy.ContentTypeText,
+			http.StatusBadGateway,
+			"Proxy failed to buffer request body",
+		)
+	}
+
+	if len(bodyBytes) > maxRetryBufferBytes {
+		// Too large to hold in memory for a retry. Forward the request intact
+		// by stitching the already-read prefix back in front of the unread
+		// remainder and skip retry setup: an oversized body loses the 401
+		// retry safety net but is never truncated nor fully buffered. The
+		// struct fields both capture the original req.Body (evaluated before
+		// the assignment), so the remainder still streams and Close still
+		// closes the underlying body.
+		log.Printf("GCLOUD_TOKEN_REFRESH_RETRY host=%s body exceeds %d-byte cap; forwarding without retry", req.URL.Host, maxRetryBufferBytes)
+		req.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.MultiReader(bytes.NewReader(bodyBytes), req.Body),
+			Closer: req.Body,
+		}
+		return nil
+	}
+
+	req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	getBody := func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	}
+	req.GetBody = getBody
+	ctx.UserData = &refreshRetryState{injector: injector, getBody: getBody}
+	return nil
+}
+
+// retryWithForcedRefresh retries a 401 response exactly once with a
+// forced-fresh credential, if the original request was prepared for retry
+// by prepareRefreshRetry. Returns the original response unchanged otherwise
+// (including when the retry itself fails), so callers always get a response.
+func retryWithForcedRefresh(resp *http.Response, ctx *goproxy.ProxyCtx, store *credentials.Store) *http.Response {
+	state, ok := ctx.UserData.(*refreshRetryState)
+	if !ok || state.retried || ctx.Req == nil {
+		return resp
+	}
+	state.retried = true // at most one retry, even if this attempt also fails
+
+	if err := state.injector.ForceRefresh(); err != nil {
+		log.Printf("GCLOUD_TOKEN_REFRESH_RETRY force refresh failed: %v", err)
+		return resp
+	}
+
+	body, err := state.getBody()
+	if err != nil {
+		log.Printf("GCLOUD_TOKEN_REFRESH_RETRY rebuilding request body failed: %v", err)
+		return resp
+	}
+	ctx.Req.Body = body
+
+	if store.InjectCredentials(ctx.Req) != credentials.InjectOK {
+		return resp
+	}
+
+	log.Printf("GCLOUD_TOKEN_REFRESH_RETRY host=%s (upstream 401, retrying with forced-fresh token)", ctx.Req.URL.Host)
+	newResp, err := ctx.RoundTrip(ctx.Req)
+	if err != nil {
+		log.Printf("GCLOUD_TOKEN_REFRESH_RETRY retry round-trip failed: %v", err)
+		return resp
+	}
+	// We're discarding the original 401 in favor of newResp — close its body
+	// so the underlying connection can be reused instead of leaking.
+	if resp.Body != nil {
+		resp.Body.Close()
+	}
+	return newResp
 }
 
 func stripPort(host string) string {
