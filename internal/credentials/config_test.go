@@ -118,8 +118,8 @@ func TestLoadDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
-	if len(cfg.Credentials) != 7 {
-		t.Errorf("default config has %d entries, want 7", len(cfg.Credentials))
+	if len(cfg.Credentials) != 8 {
+		t.Errorf("default config has %d entries, want 8", len(cfg.Credentials))
 	}
 
 	// Verify the expected entries are present
@@ -127,7 +127,7 @@ func TestLoadDefaultConfig(t *testing.T) {
 	for _, entry := range cfg.Credentials {
 		envVars[entry.EnvVar] = true
 	}
-	for _, expected := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_CREDS_FILE", "CHATGPT_AUTH_FILE", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
+	for _, expected := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_CREDS_FILE", "CLAUDE_CODE_OAUTH_TOKEN", "CHATGPT_AUTH_FILE", "OPENAI_API_KEY", "CURSOR_API_KEY", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"} {
 		if !envVars[expected] {
 			t.Errorf("default config missing entry for %s", expected)
 		}
