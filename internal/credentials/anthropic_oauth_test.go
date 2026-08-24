@@ -34,6 +34,15 @@ func writeAnthropicCredsWithFields(t *testing.T, dir string, tokens anthropicOAu
 	return path
 }
 
+// authedReq returns a request already carrying the placeholder sentinel in its
+// Authorization header — the precondition for OAuth injection. Without it the
+// injector passes the request through untouched (see the NoAuthHeader test).
+func authedReq() *http.Request {
+	req := &http.Request{Header: make(http.Header)}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
+	return req
+}
+
 type anthropicTokenTransport struct {
 	base     http.RoundTripper
 	endpoint *url.URL
@@ -85,7 +94,7 @@ func TestAnthropicOAuthInject_MissingCredsFile(t *testing.T) {
 		t.Error("Available() should return true when path is configured")
 	}
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectAuthRequired {
 		t.Fatalf("Inject() = %d, want InjectAuthRequired for missing file", result)
@@ -100,7 +109,7 @@ func TestAnthropicOAuthInject_MalformedCredsJSON(t *testing.T) {
 	}
 
 	injector := NewAnthropicOAuthInjector(path)
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectFailed {
 		t.Fatalf("Inject() = %d, want InjectFailed for malformed JSON", result)
@@ -112,7 +121,7 @@ func TestAnthropicOAuthInject_EmptyTokens(t *testing.T) {
 	path := writeAnthropicCreds(t, dir, "access", "", time.Now().Add(time.Hour).UnixMilli())
 
 	injector := NewAnthropicOAuthInjector(path)
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectAuthRequired {
 		t.Fatalf("Inject() = %d, want InjectAuthRequired for empty refresh token", result)
@@ -127,7 +136,7 @@ func TestAnthropicOAuthInject_MissingClaudeAiOauth(t *testing.T) {
 	}
 
 	injector := NewAnthropicOAuthInjector(path)
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectFailed {
 		t.Fatalf("Inject() = %d, want InjectFailed for missing claudeAiOauth", result)
@@ -175,7 +184,7 @@ func TestAnthropicOAuthRefresh_RefreshesAndPersists(t *testing.T) {
 		Now:        func() time.Time { return now },
 	})
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectOK {
 		t.Fatalf("Inject() = %d, want InjectOK", result)
@@ -229,7 +238,7 @@ func TestAnthropicOAuthRefresh_PreservesNonTokenFields(t *testing.T) {
 		Now:        func() time.Time { return now },
 	})
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	if result := injector.Inject(req); result != InjectOK {
 		t.Fatalf("Inject() = %d, want InjectOK", result)
 	}
@@ -280,7 +289,7 @@ func TestAnthropicOAuthRefresh_KeepsOldRefreshIfEmpty(t *testing.T) {
 		Now:        func() time.Time { return now },
 	})
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	if result := injector.Inject(req); result != InjectOK {
 		t.Fatalf("Inject() = %d, want InjectOK", result)
 	}
@@ -313,7 +322,7 @@ func TestAnthropicOAuthRefresh_FailsWithoutClientID(t *testing.T) {
 		Now:       func() time.Time { return now },
 	})
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectFailed {
 		t.Fatalf("Inject() = %d, want InjectFailed when no client_id available", result)
@@ -349,7 +358,7 @@ func TestAnthropicOAuthSetClientID(t *testing.T) {
 
 	injector.SetClientID("captured-client-id")
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectOK {
 		t.Fatalf("Inject() = %d, want InjectOK after SetClientID", result)
@@ -369,8 +378,9 @@ func TestAnthropicOAuthSetClientID_DoesNotOverrideExisting(t *testing.T) {
 	injector := NewAnthropicOAuthInjectorWithConfig(AnthropicOAuthConfig{
 		CredsPath: filepath.Join(dir, ".credentials.json"),
 	})
-	// Load the file to pick up the clientId
-	req := &http.Request{Header: make(http.Header)}
+	// Load the file to pick up the clientId (requires the sentinel to be present,
+	// otherwise the injector passes through before reaching the load path).
+	req := authedReq()
 	injector.Inject(req)
 
 	injector.SetClientID("should-not-override")
@@ -403,7 +413,7 @@ func TestAnthropicOAuthAcceptLoginTokens(t *testing.T) {
 		t.Fatalf("AcceptLoginTokens: %v", err)
 	}
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectOK {
 		t.Fatalf("Inject() = %d after AcceptLoginTokens, want InjectOK", result)
@@ -439,7 +449,7 @@ func TestAnthropicOAuthInject_CredsFileAppearsLater(t *testing.T) {
 	expiresAt := time.Now().Add(time.Hour).UnixMilli()
 	injector := NewAnthropicOAuthInjector(credsPath)
 
-	req := &http.Request{Header: make(http.Header)}
+	req := authedReq()
 	result := injector.Inject(req)
 	if result != InjectAuthRequired {
 		t.Fatalf("Inject() before file exists = %d, want InjectAuthRequired", result)
@@ -447,7 +457,7 @@ func TestAnthropicOAuthInject_CredsFileAppearsLater(t *testing.T) {
 
 	writeAnthropicCreds(t, dir, "late-access", "late-refresh", expiresAt)
 
-	req = &http.Request{Header: make(http.Header)}
+	req = authedReq()
 	result = injector.Inject(req)
 	if result != InjectOK {
 		t.Fatalf("Inject() after file appears = %d, want InjectOK", result)
@@ -469,5 +479,22 @@ func TestAnthropicOAuthInject_NilRequest(t *testing.T) {
 	result := injector.Inject(nil)
 	if result != InjectFailed {
 		t.Fatalf("Inject(nil) = %d, want InjectFailed", result)
+	}
+}
+
+// TestAnthropicOAuthInject_NoAuthHeader_PassThrough verifies a request without
+// an Authorization header is forwarded untouched (InjectNoMatch), never
+// returning InjectAuthRequired or triggering a refresh — even when the injector
+// is in a needs-login state (missing creds file). This is the downloads.claude.ai
+// case for the .claude.ai OAuth route.
+func TestAnthropicOAuthInject_NoAuthHeader_PassThrough(t *testing.T) {
+	injector := NewAnthropicOAuthInjector("/nonexistent/path/.credentials.json")
+	req := &http.Request{Header: make(http.Header)}
+
+	if got := injector.Inject(req); got != InjectNoMatch {
+		t.Fatalf("no auth header should return InjectNoMatch, got %d", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization should be absent, got %q", got)
 	}
 }

@@ -200,7 +200,12 @@ func TestIntegration_MITMProxy(t *testing.T) {
 		}
 	})
 
-	t.Run("request without auth header gets credential injected", func(t *testing.T) {
+	// An anonymous request (no Authorization header) that matches a bearer route
+	// by domain must be forwarded untouched — the proxy must never fabricate auth
+	// on an unauthenticated fetch. This is the downloads.claude.ai regression: the
+	// public CDN shares the .claude.ai route suffix, and the auto-updater fetches
+	// it with no auth, so injecting a token would turn a 200 into a 401.
+	t.Run("request without auth header is forwarded untouched", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", upstream.URL+"/test", nil)
 		resp, err := client.Do(req)
 		if err != nil {
@@ -208,14 +213,18 @@ func TestIntegration_MITMProxy(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+		}
+
 		var headers map[string]string
 		if err := json.NewDecoder(resp.Body).Decode(&headers); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
 
-		auth := headers["Authorization"]
-		if auth != "Bearer test-secret-key" {
-			t.Errorf("expected injected credential 'Bearer test-secret-key', got %q", auth)
+		if auth := headers["Authorization"]; auth != "" {
+			t.Errorf("anonymous request must not get a fabricated credential, got %q", auth)
 		}
 	})
 }
