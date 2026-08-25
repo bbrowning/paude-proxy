@@ -34,7 +34,11 @@ func (h *HeaderInjector) Inject(req *http.Request) InjectResult {
 }
 
 // BearerInjector injects an Authorization: Bearer header with a static token.
-// Always overrides — the agent may have a dummy placeholder token.
+// It overrides the placeholder token the agent presents, but only when the
+// agent actually sent an Authorization header. A request with no Authorization
+// header is passed through untouched (InjectNoMatch) so the proxy never
+// fabricates auth on an unauthenticated request — e.g. the anonymous
+// auto-update fetch to downloads.claude.ai, which shares the .claude.ai route.
 type BearerInjector struct {
 	Token string
 }
@@ -43,12 +47,18 @@ func (b *BearerInjector) Inject(req *http.Request) InjectResult {
 	if !validateRequest(req, "BearerInjector") {
 		return InjectFailed
 	}
+	if req.Header.Get("Authorization") == "" {
+		return InjectNoMatch
+	}
 	req.Header.Set("Authorization", "Bearer "+b.Token)
 	return InjectOK
 }
 
 // APIKeyInjector injects a key into a custom header (e.g., x-api-key).
-// Always overrides — the agent may have a dummy placeholder key.
+// It overrides the placeholder key the agent presents, but only when the agent
+// actually sent that header. A request without the header is passed through
+// untouched (InjectNoMatch) so the proxy never fabricates auth on an
+// unauthenticated request.
 type APIKeyInjector struct {
 	HeaderName string
 	Key        string
@@ -57,6 +67,9 @@ type APIKeyInjector struct {
 func (a *APIKeyInjector) Inject(req *http.Request) InjectResult {
 	if !validateRequest(req, "APIKeyInjector") {
 		return InjectFailed
+	}
+	if req.Header.Get(a.HeaderName) == "" {
+		return InjectNoMatch
 	}
 	req.Header.Set(a.HeaderName, a.Key)
 	return InjectOK

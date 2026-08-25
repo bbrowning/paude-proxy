@@ -218,6 +218,7 @@ func TestBuildFromConfig_Bearer(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.openai.com")
 	}
@@ -246,6 +247,7 @@ func TestBuildFromConfig_APIKey(t *testing.T) {
 		URL:    &url.URL{Host: "api.anthropic.com"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("x-api-key", SyntheticToken)
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.anthropic.com")
 	}
@@ -273,6 +275,7 @@ func TestBuildFromConfig_GitHubBearer(t *testing.T) {
 		URL:    &url.URL{Host: "api.github.com"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Error("should match api.github.com")
 	}
@@ -359,6 +362,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.a.com"},
 		Header: make(http.Header),
 	}
+	req1.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req1); result != InjectOK {
 		t.Error("should match api.a.com")
 	}
@@ -371,6 +375,7 @@ func TestBuildFromConfig_MultipleEntries(t *testing.T) {
 		URL:    &url.URL{Host: "api.b.com"},
 		Header: make(http.Header),
 	}
+	req2.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req2); result != InjectOK {
 		t.Error("should match api.b.com")
 	}
@@ -508,6 +513,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "exact.com"},
 		Header: make(http.Header),
 	}
+	req1.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req1); result != InjectOK {
 		t.Error("should match exact.com")
 	}
@@ -517,6 +523,7 @@ func TestBuildFromConfig_ExactAndSuffixDomains(t *testing.T) {
 		URL:    &url.URL{Host: "sub.suffix.com"},
 		Header: make(http.Header),
 	}
+	req2.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req2); result != InjectOK {
 		t.Error("should match sub.suffix.com")
 	}
@@ -708,6 +715,7 @@ func TestBuildFromConfig_AnthropicOAuth(t *testing.T) {
 		URL:    &url.URL{Host: "api.anthropic.com"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Fatal("Anthropic OAuth route should inject for api.anthropic.com")
 	}
@@ -719,6 +727,7 @@ func TestBuildFromConfig_AnthropicOAuth(t *testing.T) {
 		URL:    &url.URL{Host: "app.claude.ai"},
 		Header: make(http.Header),
 	}
+	req2.Header.Set("Authorization", "Bearer "+SyntheticToken)
 	if result := store.InjectCredentials(req2); result != InjectOK {
 		t.Fatal("Anthropic OAuth route should inject for app.claude.ai")
 	}

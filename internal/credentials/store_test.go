@@ -17,6 +17,8 @@ func TestStore_InjectCredentials_ExactDomain(t *testing.T) {
 		URL:    &url.URL{Host: "github.com"},
 		Header: make(http.Header),
 	}
+	// Agent presents the placeholder sentinel; the proxy swaps in the real token.
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Errorf("should match github.com, got %d", result)
@@ -37,6 +39,7 @@ func TestStore_InjectCredentials_DomainSuffix(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com:443"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Errorf("should match api.openai.com via suffix .openai.com, got %d", result)
@@ -66,6 +69,30 @@ func TestStore_InjectCredentials_NoMatch(t *testing.T) {
 	}
 }
 
+// TestStore_DownloadsClaudeAI_NoInjection is the downloads.claude.ai regression:
+// the .claude.ai bearer route matches downloads.claude.ai by suffix, but an
+// anonymous CDN fetch (no Authorization header) must be forwarded untouched so
+// the public bucket serves it, not rejected with a fabricated OAuth token.
+func TestStore_DownloadsClaudeAI_NoInjection(t *testing.T) {
+	store := NewStore()
+	store.AddRoute(Route{
+		DomainSuffix: ".claude.ai",
+		Injector:     &BearerInjector{Token: "real-oauth-token"},
+	})
+
+	req := &http.Request{
+		URL:    &url.URL{Host: "downloads.claude.ai"},
+		Header: make(http.Header),
+	}
+
+	if result := store.InjectCredentials(req); result != InjectNoMatch {
+		t.Errorf("anonymous downloads.claude.ai should pass through, got %d", result)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization should be absent, got %q", got)
+	}
+}
+
 func TestStore_InjectCredentials_AlwaysOverrides(t *testing.T) {
 	store := NewStore()
 	store.AddRoute(Route{
@@ -92,6 +119,7 @@ func TestAPIKeyInjector(t *testing.T) {
 	inj := &APIKeyInjector{HeaderName: "x-api-key", Key: "sk-ant-test"}
 
 	req := &http.Request{Header: make(http.Header)}
+	req.Header.Set("x-api-key", SyntheticToken)
 	if inj.Inject(req) != InjectOK {
 		t.Error("Inject should return InjectOK")
 	}
@@ -125,6 +153,7 @@ func TestStore_FirstMatchWins(t *testing.T) {
 		URL:    &url.URL{Host: "api.openai.com"},
 		Header: make(http.Header),
 	}
+	req.Header.Set("Authorization", "Bearer "+SyntheticToken)
 
 	if result := store.InjectCredentials(req); result != InjectOK {
 		t.Errorf("should match and inject for api.openai.com, got %d", result)

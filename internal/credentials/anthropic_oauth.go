@@ -93,11 +93,18 @@ func (a *AnthropicOAuthInjector) Available() bool {
 	return a.config.CredsPath != ""
 }
 
-// Inject sets the Authorization Bearer header. Returns InjectAuthRequired
-// when no tokens are loaded yet.
+// Inject swaps the placeholder Authorization Bearer token the agent presents
+// for a real Anthropic OAuth token, refreshing it if needed. A request with no
+// Authorization header is passed through untouched (InjectNoMatch) — it never
+// triggers login/refresh — so the proxy leaves anonymous fetches (e.g.
+// downloads.claude.ai, which shares the .claude.ai route) alone. Returns
+// InjectAuthRequired when the header is present but no tokens are loaded yet.
 func (a *AnthropicOAuthInjector) Inject(req *http.Request) InjectResult {
 	if !validateRequest(req, "AnthropicOAuthInjector") {
 		return InjectFailed
+	}
+	if req.Header.Get("Authorization") == "" {
+		return InjectNoMatch
 	}
 
 	a.mu.Lock()
