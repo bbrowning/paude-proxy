@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -462,6 +463,56 @@ func TestIntegration_EndpointExceptionHTTP(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("endpoint outside ALLOWED_DOMAINS status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestIntegration_EndpointExceptionUnderscoreHostnameHTTP(t *testing.T) {
+	skipIntegration(t)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	testAuthority := net.JoinHostPort("api_service", upstreamURL.Port())
+	endpoints, err := filter.NewEndpointFilter(testAuthority)
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+
+	dialer := &net.Dialer{}
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("api_service,other_service"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+		UpstreamDialer: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, upstreamURL.Host)
+		},
+	})
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
+
+	resp, err := client.Get("http://" + testAuthority)
+	if err != nil {
+		t.Fatalf("underscore endpoint exception request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("underscore endpoint exception status = %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = client.Get("http://" + net.JoinHostPort("other_service", upstreamURL.Port()))
+	if err != nil {
+		t.Fatalf("destination-scoped rejection returned transport error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("same port on another service status = %d, want 403", resp.StatusCode)
 	}
 }
 

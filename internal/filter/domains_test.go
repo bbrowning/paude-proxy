@@ -1,6 +1,46 @@
 package filter
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestValidateDomainListRejectsExplicitPorts(t *testing.T) {
+	for _, input := range []string{
+		"api.example.com:8443",
+		".example.com:8443",
+		"*.example.com:8443",
+		"192.0.2.1:8000",
+		"[2001:db8::1]:4317",
+	} {
+		t.Run(input, func(t *testing.T) {
+			err := ValidateDomainList(input)
+			if err == nil {
+				t.Fatalf("ValidateDomainList(%q) succeeded, want error", input)
+			}
+			if !strings.Contains(err.Error(), "ALLOWED_ENDPOINTS") {
+				t.Errorf("error %q does not direct operators to ALLOWED_ENDPOINTS", err)
+			}
+		})
+	}
+}
+
+func TestValidateDomainListPreservesDomainPatterns(t *testing.T) {
+	for _, input := range []string{
+		"api.example.com",
+		".example.com",
+		"192.0.2.1",
+		"2001:db8::1",
+		"[2001:db8::1]",
+		`~^service:[0-9]+$`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if err := ValidateDomainList(input); err != nil {
+				t.Errorf("ValidateDomainList(%q) = %v", input, err)
+			}
+		})
+	}
+}
 
 func TestDomainFilter_EmptyAllowsAll(t *testing.T) {
 	f := NewDomainFilter("")

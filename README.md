@@ -204,6 +204,10 @@ All configuration is via environment variables:
 
 Example: `github.com,.openai.com,~aiplatform\.googleapis\.com$`
 
+Domain entries must not include ports. Put each exact nonstandard `host:port`
+exception in `ALLOWED_ENDPOINTS`; a port-bearing `ALLOWED_DOMAINS` entry is
+rejected at startup.
+
 ### Destination-scoped port exceptions
 
 `ALLOWED_ENDPOINTS` permits nonstandard ports for exact destinations while
@@ -220,12 +224,15 @@ This allows port `8000` only on `192.168.7.31` and port `8443` only on
 The rule applies equally to plain HTTP and HTTPS `CONNECT` traffic. Hostnames
 are case-insensitive and ignore a trailing dot, while IP addresses are matched
 in canonical form. IPv6 endpoints use bracketed authority syntax, for example
-`[2001:db8::1]:4317`.
+`[2001:db8::1]:4317`. Endpoint hostnames may contain underscores for
+Docker/Podman service names.
 
 Endpoint entries must be exact `host:port` authorities. Wildcards, domain
 suffixes, regular expressions, URI schemes, paths, userinfo, missing ports, and
 ports outside `1..65535` are rejected at startup. Ports allowed by the default
 policy (`80`/`443`) and `ALLOWED_OTEL_PORTS` remain global and unchanged.
+Startup warns for any endpoint whose host is outside `ALLOWED_DOMAINS`; such an
+endpoint remains configured but can never authorize traffic.
 
 ### Custom Credential Routing
 

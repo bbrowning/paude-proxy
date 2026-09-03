@@ -1,12 +1,47 @@
 package filter
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
 )
+
+// ValidateDomainList rejects authority-like entries in ALLOWED_DOMAINS. Port
+// exceptions are destination-scoped and belong in ALLOWED_ENDPOINTS instead.
+// Regex entries are left untouched because colons can be meaningful regex
+// syntax rather than an authority separator.
+func ValidateDomainList(domainList string) error {
+	for _, raw := range strings.Split(domainList, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" || strings.HasPrefix(entry, "~") {
+			continue
+		}
+
+		candidate := strings.TrimPrefix(strings.TrimPrefix(entry, "."), "*.")
+		if domainPatternHasPort(candidate) {
+			return fmt.Errorf("entry %q must not include a port; configure exact host:port exceptions with ALLOWED_ENDPOINTS", entry)
+		}
+	}
+	return nil
+}
+
+func domainPatternHasPort(pattern string) bool {
+	if _, _, err := net.SplitHostPort(pattern); err == nil {
+		return true
+	}
+	if strings.HasPrefix(pattern, "[") {
+		if closing := strings.LastIndex(pattern, "]"); closing >= 0 {
+			return len(pattern) > closing+1 && pattern[closing+1] == ':'
+		}
+	}
+	if _, err := netip.ParseAddr(pattern); err == nil {
+		return false
+	}
+	return strings.Contains(pattern, ":")
+}
 
 // DomainFilter checks whether a hostname is allowed based on
 // an allowlist of exact domains, wildcard suffixes, and regex patterns.

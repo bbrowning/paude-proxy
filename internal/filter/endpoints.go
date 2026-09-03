@@ -69,6 +69,24 @@ func (f *EndpointFilter) String() string {
 	return strings.Join(f.exact, ",")
 }
 
+// DisallowedAuthorities returns configured authorities whose hosts are not
+// permitted by domains. The returned values are canonical authorities and
+// contain no configuration beyond the destination host and port.
+func (f *EndpointFilter) DisallowedAuthorities(domains *DomainFilter) []string {
+	if f == nil || domains == nil || domains.AllowAll() {
+		return nil
+	}
+
+	var disallowed []string
+	for _, authority := range f.exact {
+		host, _, err := net.SplitHostPort(authority)
+		if err == nil && !domains.IsAllowed(host) {
+			disallowed = append(disallowed, authority)
+		}
+	}
+	return disallowed
+}
+
 func canonicalAuthority(authority string) (string, error) {
 	if strings.ContainsAny(authority, "/?#@") || strings.Contains(authority, "://") {
 		return "", fmt.Errorf("must be an authority without a scheme, path, query, fragment, or userinfo")
@@ -137,7 +155,7 @@ func canonicalHostname(host string) (string, error) {
 			return "", fmt.Errorf("invalid hostname label")
 		}
 		for i, r := range label {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r == '-' && i > 0 && i < len(label)-1) {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || (r == '-' && i > 0 && i < len(label)-1) {
 				continue
 			}
 			return "", fmt.Errorf("invalid character in hostname")

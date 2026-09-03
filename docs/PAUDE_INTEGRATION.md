@@ -257,8 +257,12 @@ different allowed host. These rules apply to both plain HTTP and CONNECT.
 
 Hostnames are canonicalized for case and a trailing dot, and IP addresses are
 matched in canonical form. IPv6 must use brackets, such as
-`[2001:db8::1]:4317`. Invalid entries, including suffix or regex patterns,
+`[2001:db8::1]:4317`; underscores are accepted in endpoint hostnames for
+Docker/Podman service names. Invalid entries, including suffix or regex patterns,
 paths, userinfo, missing ports, and ports outside `1..65535`, fail proxy startup.
+Ports must not be included in `ALLOWED_DOMAINS`; startup errors direct those
+exact destination exceptions to `ALLOWED_ENDPOINTS`. Startup also warns for
+each endpoint whose host does not match `ALLOWED_DOMAINS`.
 The existing default ports and global `ALLOWED_OTEL_PORTS` behavior are
 unchanged.
 

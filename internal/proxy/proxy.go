@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -313,8 +314,12 @@ type Config struct {
 	EndpointFilter *filter.EndpointFilter
 	BlockedLogger  *BlockedLogger
 	Verbose        bool
-	ClientFilter   *ClientFilter  // If non-nil, only listed IPs/CIDRs can connect
-	UpstreamCAs    *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
+	// ClientFilter restricts clients by source IP when non-nil.
+	ClientFilter *ClientFilter
+	// UpstreamCAs replaces the system roots for upstream TLS verification in tests.
+	UpstreamCAs *x509.CertPool
+	// UpstreamDialer replaces upstream network dialing in tests.
+	UpstreamDialer func(context.Context, string, string) (net.Conn, error)
 }
 
 // New creates a configured goproxy server.
@@ -340,6 +345,9 @@ func New(cfg Config) *http.Server {
 	}
 	if cfg.UpstreamCAs != nil {
 		proxyTransport.TLSClientConfig.RootCAs = cfg.UpstreamCAs
+	}
+	if cfg.UpstreamDialer != nil {
+		proxyTransport.DialContext = cfg.UpstreamDialer
 	}
 	proxy.Tr = proxyTransport
 	proxy.Verbose = cfg.Verbose
