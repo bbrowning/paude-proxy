@@ -1,6 +1,8 @@
 package filter
 
 import (
+	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
@@ -40,10 +42,8 @@ func NewDomainFilter(domainList string) *DomainFilter {
 		if d == "" {
 			continue
 		}
-		d = strings.ToLower(d)
-
 		if strings.HasPrefix(d, "~") {
-			pattern := d[1:]
+			pattern := strings.ToLower(d[1:])
 			re, err := regexp.Compile(pattern)
 			if err != nil {
 				// Skip invalid regex, log would be better but keep it simple
@@ -52,11 +52,12 @@ func NewDomainFilter(domainList string) *DomainFilter {
 			f.regexes = append(f.regexes, re)
 		} else if strings.HasPrefix(d, ".") {
 			// Wildcard suffix: .example.com matches example.com and *.example.com
-			f.suffixes = append(f.suffixes, d)
+			suffix := "." + canonicalDomainHostname(d[1:])
+			f.suffixes = append(f.suffixes, suffix)
 			// Also match the bare domain (e.g., .example.com matches example.com)
-			f.exact[d[1:]] = true
+			f.exact[suffix[1:]] = true
 		} else {
-			f.exact[d] = true
+			f.exact[canonicalDomainHostname(d)] = true
 		}
 	}
 
@@ -72,11 +73,7 @@ func (f *DomainFilter) IsAllowed(host string) bool {
 		return true
 	}
 
-	// Strip port if present
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-	host = strings.ToLower(host)
+	host = canonicalDomainHostname(host)
 
 	// Check exact match
 	if f.exact[host] {
@@ -98,6 +95,22 @@ func (f *DomainFilter) IsAllowed(host string) bool {
 	}
 
 	return false
+}
+
+// canonicalDomainHostname normalizes comparison forms without changing the
+// permissive ALLOWED_DOMAINS parser contract. Endpoint configuration performs
+// stricter validation separately.
+func canonicalDomainHostname(host string) string {
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	host = strings.TrimRight(strings.ToLower(host), ".")
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.Unmap().String()
+	}
+	return host
 }
 
 // AllowAll returns true if the filter permits all domains.

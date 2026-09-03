@@ -25,6 +25,11 @@ func main() {
 	verbose := os.Getenv("PAUDE_PROXY_VERBOSE") == "1"
 	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/paude-proxy-blocked.log")
 	otelPortsStr := os.Getenv("ALLOWED_OTEL_PORTS")
+	allowedEndpoints := os.Getenv("ALLOWED_ENDPOINTS")
+	endpointFilter, err := filter.NewEndpointFilter(allowedEndpoints)
+	if err != nil {
+		log.Fatalf("Invalid ALLOWED_ENDPOINTS: %v", err)
+	}
 
 	// Client IP filtering (optional, for defense-in-depth)
 	allowedClients := os.Getenv("PAUDE_PROXY_ALLOWED_CLIENTS")
@@ -64,6 +69,11 @@ func main() {
 	} else {
 		log.Printf("Domain filtering: ENABLED (%s)", allowedDomains)
 	}
+	if endpointFilter.Empty() {
+		log.Println("Endpoint port exceptions: DISABLED")
+	} else {
+		log.Printf("Endpoint port exceptions: ENABLED (%s; destinations must also match ALLOWED_DOMAINS)", endpointFilter)
+	}
 
 	// Port filter
 	portFilter := proxy.DefaultPortFilter()
@@ -92,15 +102,16 @@ func main() {
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
-		ListenAddr:    listenAddr,
-		CA:            ca,
-		DomainFilter:  domainFilter,
-		CredStore:     credStore,
-		TokenVendor:   tokenVendor,
-		PortFilter:    portFilter,
-		BlockedLogger: blockedLogger,
-		Verbose:       verbose,
-		ClientFilter:  clientFilter,
+		ListenAddr:     listenAddr,
+		CA:             ca,
+		DomainFilter:   domainFilter,
+		CredStore:      credStore,
+		TokenVendor:    tokenVendor,
+		PortFilter:     portFilter,
+		EndpointFilter: endpointFilter,
+		BlockedLogger:  blockedLogger,
+		Verbose:        verbose,
+		ClientFilter:   clientFilter,
 	})
 
 	// Graceful shutdown

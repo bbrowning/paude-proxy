@@ -87,6 +87,8 @@ func TestExtractPort(t *testing.T) {
 		{"example.com", 80, 80},
 		{"example.com", 443, 443},
 		{"127.0.0.1:3128", 80, 3128},
+		{"[2001:db8::1]:8443", 443, 8443},
+		{"2001:db8::1", 443, 443},
 		{"example.com:notaport", 80, 80},
 	}
 	for _, tt := range tests {

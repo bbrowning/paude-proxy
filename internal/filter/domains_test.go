@@ -101,10 +101,25 @@ func TestDomainFilter_Mixed(t *testing.T) {
 func TestDomainFilter_CaseInsensitive(t *testing.T) {
 	f := NewDomainFilter("GitHub.com,.OpenAI.com")
 
-	// Filter lowercases input but stored values are as-is.
-	// The host input is lowercased in IsAllowed.
 	if !f.IsAllowed("GITHUB.COM") {
 		t.Error("should be case-insensitive for host input")
+	}
+}
+
+func TestDomainFilter_CanonicalHostForms(t *testing.T) {
+	f := NewDomainFilter("Example.COM.,2001:0db8:0:0::1,::ffff:192.0.2.1")
+
+	tests := []string{
+		"example.com",
+		"EXAMPLE.COM.",
+		"[2001:db8::1]:443",
+		"2001:0db8:0:0:0:0:0:1",
+		"192.0.2.1",
+	}
+	for _, host := range tests {
+		if !f.IsAllowed(host) {
+			t.Errorf("canonical host form %q should be allowed", host)
+		}
 	}
 }
 

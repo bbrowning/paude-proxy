@@ -35,7 +35,7 @@ The paude-proxy Dockerfile builds a CentOS Stream 10 image with the Go binary, d
   - `CURSOR_API_KEY` — real key
   - `GH_TOKEN` — real GitHub PAT
   - `GOOGLE_APPLICATION_CREDENTIALS` — path to real ADC JSON (mount or inject the file)
-- Proxy container keeps: `ALLOWED_DOMAINS`, `SQUID_DNS`, `ALLOWED_OTEL_PORTS`
+- Proxy container keeps: `ALLOWED_DOMAINS`, `SQUID_DNS`, `ALLOWED_ENDPOINTS`, `ALLOWED_OTEL_PORTS`
 - Agent container gets dummy placeholders instead of real credentials:
   - `ANTHROPIC_API_KEY=paude-proxy-managed`
   - `OPENAI_API_KEY=paude-proxy-managed`
@@ -247,6 +247,20 @@ paude-proxy now enforces the same port restrictions as squid:
 - HTTP requests: ports 80 and 443 only
 - CONNECT (HTTPS): port 443 only
 - Additional ports via `ALLOWED_OTEL_PORTS`
+
+For a nonstandard port that should be available only on one destination, pass
+an exact authority in the plural `ALLOWED_ENDPOINTS` variable. For example,
+`ALLOWED_ENDPOINTS=192.168.7.31:8000,api.example.com:8443` permits each port
+only for its paired host. The host must independently match `ALLOWED_DOMAINS`;
+an endpoint entry never expands the domain allowlist or grants that port to a
+different allowed host. These rules apply to both plain HTTP and CONNECT.
+
+Hostnames are canonicalized for case and a trailing dot, and IP addresses are
+matched in canonical form. IPv6 must use brackets, such as
+`[2001:db8::1]:4317`. Invalid entries, including suffix or regex patterns,
+paths, userinfo, missing ports, and ports outside `1..65535`, fail proxy startup.
+The existing default ports and global `ALLOWED_OTEL_PORTS` behavior are
+unchanged.
 
 ### Proxy identity headers
 
