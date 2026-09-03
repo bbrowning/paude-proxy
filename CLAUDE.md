@@ -75,7 +75,8 @@ The agent container is the threat actor. It can make arbitrary HTTP requests thr
 | `PAUDE_PROXY_VERBOSE` | Verbose logging (`1`/`0`) | `0` |
 | `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
 | `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing JSON config | (embedded default) |
-| `ALLOWED_DOMAINS` | Comma-separated allowlist (empty = all) | |
+| `ALLOWED_DOMAINS` | Comma-separated allowlist without ports (empty = all) | |
+| `ALLOWED_ENDPOINTS` | Comma-separated exact `host:port` exceptions; underscores are allowed and hosts must also match `ALLOWED_DOMAINS` | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `ANTHROPIC_OAUTH_CREDS_FILE` | Path to Anthropic OAuth credentials JSON file | |
 | `ANTHROPIC_API_KEY` | -> `x-api-key` for `*.anthropic.com` | |

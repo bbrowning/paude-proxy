@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -304,16 +305,21 @@ type credInjectedFlag struct{}
 
 // Config holds proxy configuration.
 type Config struct {
-	ListenAddr    string
-	CA            *CA
-	DomainFilter  *filter.DomainFilter
-	CredStore     *credentials.Store
-	TokenVendor   *credentials.TokenVendor
-	PortFilter    *PortFilter
-	BlockedLogger *BlockedLogger
-	Verbose       bool
-	ClientFilter  *ClientFilter  // If non-nil, only listed IPs/CIDRs can connect
-	UpstreamCAs   *x509.CertPool // If non-nil, used as root CAs for upstream TLS verification (for testing)
+	ListenAddr     string
+	CA             *CA
+	DomainFilter   *filter.DomainFilter
+	CredStore      *credentials.Store
+	TokenVendor    *credentials.TokenVendor
+	PortFilter     *PortFilter
+	EndpointFilter *filter.EndpointFilter
+	BlockedLogger  *BlockedLogger
+	Verbose        bool
+	// ClientFilter restricts clients by source IP when non-nil.
+	ClientFilter *ClientFilter
+	// UpstreamCAs replaces the system roots for upstream TLS verification in tests.
+	UpstreamCAs *x509.CertPool
+	// UpstreamDialer replaces upstream network dialing in tests.
+	UpstreamDialer func(context.Context, string, string) (net.Conn, error)
 }
 
 // New creates a configured goproxy server.
@@ -339,6 +345,9 @@ func New(cfg Config) *http.Server {
 	}
 	if cfg.UpstreamCAs != nil {
 		proxyTransport.TLSClientConfig.RootCAs = cfg.UpstreamCAs
+	}
+	if cfg.UpstreamDialer != nil {
+		proxyTransport.DialContext = cfg.UpstreamDialer
 	}
 	proxy.Tr = proxyTransport
 	proxy.Verbose = cfg.Verbose
@@ -372,7 +381,7 @@ func New(cfg Config) *http.Server {
 			port := extractPort(host, 443)
 
 			// Port filtering for CONNECT (SSL_ports)
-			if cfg.PortFilter != nil && !cfg.PortFilter.SSLPorts[port] {
+			if cfg.PortFilter != nil && !cfg.PortFilter.SSLPorts[port] && !cfg.EndpointFilter.IsAllowed(hostname, port) {
 				log.Printf("BLOCKED CONNECT %s (port %d not allowed)", host, port)
 				if cfg.BlockedLogger != nil {
 					cfg.BlockedLogger.Log(clientIP(ctx), "CONNECT", host)
@@ -452,7 +461,7 @@ func New(cfg Config) *http.Server {
 			// HTTPS requests already passed port filtering in HandleConnectFunc.
 			if cfg.PortFilter != nil && req.URL.Scheme == "http" {
 				port := extractPort(req.URL.Host, 80)
-				if !cfg.PortFilter.SafePorts[port] {
+				if !cfg.PortFilter.SafePorts[port] && !cfg.EndpointFilter.IsAllowed(hostname, port) {
 					log.Printf("BLOCKED %s %s (port %d not allowed)", req.Method, req.URL.String(), port)
 					if cfg.BlockedLogger != nil {
 						cfg.BlockedLogger.Log(clientIP(ctx), req.Method, req.URL.String())
@@ -695,16 +704,19 @@ func retryWithForcedRefresh(resp *http.Response, ctx *goproxy.ProxyCtx, store *c
 }
 
 func stripPort(host string) string {
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		return host[:idx]
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		return parsedHost
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	}
 	return host
 }
 
 // extractPort returns the port from a host:port string, or defaultPort if none.
 func extractPort(host string, defaultPort int) int {
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		if p, err := strconv.Atoi(host[idx+1:]); err == nil {
+	if _, port, err := net.SplitHostPort(host); err == nil {
+		if p, err := strconv.Atoi(port); err == nil {
 			return p
 		}
 	}

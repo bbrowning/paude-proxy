@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -397,6 +398,198 @@ func TestIntegration_PortFiltering(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestIntegration_EndpointExceptionHTTP(t *testing.T) {
+	skipIntegration(t)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	endpoints, err := filter.NewEndpointFilter(upstreamURL.Host)
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("127.0.0.1,localhost"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+	})
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
+
+	resp, err := client.Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("endpoint exception request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("endpoint exception status = %d, want 200", resp.StatusCode)
+	}
+
+	otherDestination := *upstreamURL
+	otherDestination.Host = net.JoinHostPort("localhost", upstreamURL.Port())
+	resp, err = client.Get(otherDestination.String())
+	if err != nil {
+		t.Fatalf("destination-scoped rejection returned transport error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("same port on another allowed host status = %d, want 403", resp.StatusCode)
+	}
+
+	blockedProxyAddr, blockedCleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("localhost"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+	})
+	defer blockedCleanup()
+	blockedClient := httpClientViaProxy(t, blockedProxyAddr, ca.Certificate, nil)
+	resp, err = blockedClient.Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("domain-intersection rejection returned transport error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("endpoint outside ALLOWED_DOMAINS status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestIntegration_EndpointExceptionUnderscoreHostnameHTTP(t *testing.T) {
+	skipIntegration(t)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	testAuthority := net.JoinHostPort("api_service", upstreamURL.Port())
+	endpoints, err := filter.NewEndpointFilter(testAuthority)
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+
+	dialer := &net.Dialer{}
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("api_service,other_service"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+		UpstreamDialer: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, upstreamURL.Host)
+		},
+	})
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
+
+	resp, err := client.Get("http://" + testAuthority)
+	if err != nil {
+		t.Fatalf("underscore endpoint exception request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("underscore endpoint exception status = %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = client.Get("http://" + net.JoinHostPort("other_service", upstreamURL.Port()))
+	if err != nil {
+		t.Fatalf("destination-scoped rejection returned transport error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("same port on another service status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestIntegration_EndpointExceptionCONNECT(t *testing.T) {
+	skipIntegration(t)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	upstreamCAs := upstreamCertPool(t, upstream)
+	upstreamCert, _ := x509.ParseCertificate(upstream.TLS.Certificates[0].Certificate[0])
+
+	endpoints, err := filter.NewEndpointFilter(upstreamURL.Host)
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("127.0.0.1,localhost"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+		UpstreamCAs:    upstreamCAs,
+	})
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, upstreamCert)
+
+	resp, err := client.Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("CONNECT endpoint exception request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT endpoint exception status = %d, want 200", resp.StatusCode)
+	}
+
+	otherDestination := *upstreamURL
+	otherDestination.Host = net.JoinHostPort("localhost", upstreamURL.Port())
+	if _, err := client.Get(otherDestination.String()); err == nil {
+		t.Error("same CONNECT port on another allowed host should be rejected")
+	}
+}
+
+func TestIntegration_EndpointExceptionRequiresAllowedDomain(t *testing.T) {
+	skipIntegration(t)
+	ca, err := GenerateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	endpoints, err := filter.NewEndpointFilter(upstreamURL.Host)
+	if err != nil {
+		t.Fatalf("endpoint filter: %v", err)
+	}
+
+	proxyAddr, cleanup := startTestProxyWithConfig(t, Config{
+		CA:             ca,
+		DomainFilter:   filter.NewDomainFilter("localhost"),
+		PortFilter:     DefaultPortFilter(),
+		EndpointFilter: endpoints,
+	})
+	defer cleanup()
+	client := httpClientViaProxy(t, proxyAddr, ca.Certificate, nil)
+
+	if _, err := client.Get(upstream.URL); err == nil {
+		t.Error("endpoint exception should not bypass ALLOWED_DOMAINS for CONNECT")
 	}
 }
 

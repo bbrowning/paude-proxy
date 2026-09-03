@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,11 @@ func main() {
 	verbose := os.Getenv("PAUDE_PROXY_VERBOSE") == "1"
 	blockedLogPath := envOr("BLOCKED_LOG_PATH", "/tmp/paude-proxy-blocked.log")
 	otelPortsStr := os.Getenv("ALLOWED_OTEL_PORTS")
+	allowedEndpoints := os.Getenv("ALLOWED_ENDPOINTS")
+	domainFilter, endpointFilter, err := loadDestinationFilters(allowedDomains, allowedEndpoints)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Client IP filtering (optional, for defense-in-depth)
 	allowedClients := os.Getenv("PAUDE_PROXY_ALLOWED_CLIENTS")
@@ -57,13 +63,18 @@ func main() {
 		log.Printf("CA certificate written to %s/ca.crt", caDir)
 	}
 
-	// Domain filter
-	domainFilter := filter.NewDomainFilter(allowedDomains)
+	// Destination filters
 	if domainFilter.AllowAll() {
 		log.Println("Domain filtering: DISABLED (all domains allowed)")
 	} else {
 		log.Printf("Domain filtering: ENABLED (%s)", allowedDomains)
 	}
+	if endpointFilter.Empty() {
+		log.Println("Endpoint port exceptions: DISABLED")
+	} else {
+		log.Printf("Endpoint port exceptions: ENABLED (%s; destinations must also match ALLOWED_DOMAINS)", endpointFilter)
+	}
+	warnDisallowedEndpoints(domainFilter, endpointFilter)
 
 	// Port filter
 	portFilter := proxy.DefaultPortFilter()
@@ -92,15 +103,16 @@ func main() {
 
 	// Create and start proxy
 	srv := proxy.New(proxy.Config{
-		ListenAddr:    listenAddr,
-		CA:            ca,
-		DomainFilter:  domainFilter,
-		CredStore:     credStore,
-		TokenVendor:   tokenVendor,
-		PortFilter:    portFilter,
-		BlockedLogger: blockedLogger,
-		Verbose:       verbose,
-		ClientFilter:  clientFilter,
+		ListenAddr:     listenAddr,
+		CA:             ca,
+		DomainFilter:   domainFilter,
+		CredStore:      credStore,
+		TokenVendor:    tokenVendor,
+		PortFilter:     portFilter,
+		EndpointFilter: endpointFilter,
+		BlockedLogger:  blockedLogger,
+		Verbose:        verbose,
+		ClientFilter:   clientFilter,
 	})
 
 	// Graceful shutdown
@@ -125,6 +137,23 @@ func main() {
 		log.Printf("Shutdown error: %v", err)
 	}
 	log.Println("Stopped")
+}
+
+func loadDestinationFilters(allowedDomains, allowedEndpoints string) (*filter.DomainFilter, *filter.EndpointFilter, error) {
+	if err := filter.ValidateDomainList(allowedDomains); err != nil {
+		return nil, nil, fmt.Errorf("invalid ALLOWED_DOMAINS: %w", err)
+	}
+	endpointFilter, err := filter.NewEndpointFilter(allowedEndpoints)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid ALLOWED_ENDPOINTS: %w", err)
+	}
+	return filter.NewDomainFilter(allowedDomains), endpointFilter, nil
+}
+
+func warnDisallowedEndpoints(domainFilter *filter.DomainFilter, endpointFilter *filter.EndpointFilter) {
+	for _, authority := range endpointFilter.DisallowedAuthorities(domainFilter) {
+		log.Printf("WARN: ALLOWED_ENDPOINTS authority %s has a host not permitted by ALLOWED_DOMAINS — this exception will never be used", authority)
+	}
 }
 
 func buildCredentialStore(domainFilter *filter.DomainFilter) (*credentials.Store, *credentials.TokenVendor) {

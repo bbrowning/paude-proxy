@@ -1,6 +1,46 @@
 package filter
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestValidateDomainListRejectsExplicitPorts(t *testing.T) {
+	for _, input := range []string{
+		"api.example.com:8443",
+		".example.com:8443",
+		"*.example.com:8443",
+		"192.0.2.1:8000",
+		"[2001:db8::1]:4317",
+	} {
+		t.Run(input, func(t *testing.T) {
+			err := ValidateDomainList(input)
+			if err == nil {
+				t.Fatalf("ValidateDomainList(%q) succeeded, want error", input)
+			}
+			if !strings.Contains(err.Error(), "ALLOWED_ENDPOINTS") {
+				t.Errorf("error %q does not direct operators to ALLOWED_ENDPOINTS", err)
+			}
+		})
+	}
+}
+
+func TestValidateDomainListPreservesDomainPatterns(t *testing.T) {
+	for _, input := range []string{
+		"api.example.com",
+		".example.com",
+		"192.0.2.1",
+		"2001:db8::1",
+		"[2001:db8::1]",
+		`~^service:[0-9]+$`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if err := ValidateDomainList(input); err != nil {
+				t.Errorf("ValidateDomainList(%q) = %v", input, err)
+			}
+		})
+	}
+}
 
 func TestDomainFilter_EmptyAllowsAll(t *testing.T) {
 	f := NewDomainFilter("")
@@ -101,10 +141,25 @@ func TestDomainFilter_Mixed(t *testing.T) {
 func TestDomainFilter_CaseInsensitive(t *testing.T) {
 	f := NewDomainFilter("GitHub.com,.OpenAI.com")
 
-	// Filter lowercases input but stored values are as-is.
-	// The host input is lowercased in IsAllowed.
 	if !f.IsAllowed("GITHUB.COM") {
 		t.Error("should be case-insensitive for host input")
+	}
+}
+
+func TestDomainFilter_CanonicalHostForms(t *testing.T) {
+	f := NewDomainFilter("Example.COM.,2001:0db8:0:0::1,::ffff:192.0.2.1")
+
+	tests := []string{
+		"example.com",
+		"EXAMPLE.COM.",
+		"[2001:db8::1]:443",
+		"2001:0db8:0:0:0:0:0:1",
+		"192.0.2.1",
+	}
+	for _, host := range tests {
+		if !f.IsAllowed(host) {
+			t.Errorf("canonical host form %q should be allowed", host)
+		}
 	}
 }
 

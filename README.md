@@ -189,6 +189,7 @@ All configuration is via environment variables:
 | `PAUDE_PROXY_VERBOSE` | Enable verbose logging (`1`/`0`) | `0` |
 | `PAUDE_PROXY_ALLOWED_CLIENTS` | Comma-separated IPs/CIDRs allowed to connect | (all) |
 | `ALLOWED_DOMAINS` | Comma-separated domain allowlist (empty = allow all) | |
+| `ALLOWED_ENDPOINTS` | Comma-separated exact `host:port` nonstandard-port exceptions | |
 | `ALLOWED_OTEL_PORTS` | Comma-separated extra allowed ports | |
 | `BLOCKED_LOG_PATH` | Path for blocked-request log file | `/tmp/squid-blocked.log` |
 | `PAUDE_PROXY_CREDENTIALS_CONFIG` | Path to custom credential routing config (JSON) | (embedded default) |
@@ -202,6 +203,36 @@ All configuration is via environment variables:
 - **Regex**: `~pattern` — matches hostnames against the regex
 
 Example: `github.com,.openai.com,~aiplatform\.googleapis\.com$`
+
+Domain entries must not include ports. Put each exact nonstandard `host:port`
+exception in `ALLOWED_ENDPOINTS`; a port-bearing `ALLOWED_DOMAINS` entry is
+rejected at startup.
+
+### Destination-scoped port exceptions
+
+`ALLOWED_ENDPOINTS` permits nonstandard ports for exact destinations while
+keeping `ALLOWED_DOMAINS` as the destination allowlist. Both rules must match:
+
+```bash
+ALLOWED_DOMAINS=192.168.7.31,api.example.com \
+ALLOWED_ENDPOINTS=192.168.7.31:8000,api.example.com:8443 \
+./bin/paude-proxy
+```
+
+This allows port `8000` only on `192.168.7.31` and port `8443` only on
+`api.example.com`; it does not grant either port to another allowed domain.
+The rule applies equally to plain HTTP and HTTPS `CONNECT` traffic. Hostnames
+are case-insensitive and ignore a trailing dot, while IP addresses are matched
+in canonical form. IPv6 endpoints use bracketed authority syntax, for example
+`[2001:db8::1]:4317`. Endpoint hostnames may contain underscores for
+Docker/Podman service names.
+
+Endpoint entries must be exact `host:port` authorities. Wildcards, domain
+suffixes, regular expressions, URI schemes, paths, userinfo, missing ports, and
+ports outside `1..65535` are rejected at startup. Ports allowed by the default
+policy (`80`/`443`) and `ALLOWED_OTEL_PORTS` remain global and unchanged.
+Startup warns for any endpoint whose host is outside `ALLOWED_DOMAINS`; such an
+endpoint remains configured but can never authorize traffic.
 
 ### Custom Credential Routing
 
