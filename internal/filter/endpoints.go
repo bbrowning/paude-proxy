@@ -27,7 +27,7 @@ func NewEndpointFilter(endpointList string) (*EndpointFilter, error) {
 	for _, raw := range strings.Split(endpointList, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
-			return nil, fmt.Errorf("empty endpoint entry")
+			continue
 		}
 
 		authority, err := canonicalAuthority(raw)

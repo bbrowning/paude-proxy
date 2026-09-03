@@ -33,12 +33,22 @@ func TestEndpointFilter(t *testing.T) {
 }
 
 func TestEndpointFilterEmpty(t *testing.T) {
-	f, err := NewEndpointFilter("  ")
+	f, err := NewEndpointFilter(" , , ")
 	if err != nil {
 		t.Fatalf("NewEndpointFilter: %v", err)
 	}
 	if !f.Empty() {
 		t.Error("empty configuration should create an empty filter")
+	}
+}
+
+func TestEndpointFilterSkipsEmptyEntries(t *testing.T) {
+	f, err := NewEndpointFilter(", example.com:8000,, [2001:db8::1]:4317, ")
+	if err != nil {
+		t.Fatalf("NewEndpointFilter: %v", err)
+	}
+	if got, want := f.String(), "example.com:8000,[2001:db8::1]:4317"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
 
@@ -59,7 +69,6 @@ func TestEndpointFilterRejectsMalformedEntries(t *testing.T) {
 		"[fe80::1%eth0]:8000",
 		"2001:db8::1:8000",
 		"192.168.001.001:8000",
-		"example.com:8000,,other.example.com:8000",
 	}
 
 	for _, input := range tests {
