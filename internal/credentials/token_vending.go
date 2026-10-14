@@ -198,7 +198,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 
 		if grantType == "refresh_token" {
 			log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
-			return syntheticChatGPTResponse(req, tv.chatGPTPublicClaims())
+			return syntheticChatGPTResponse(req, tv.chatGPTInjector.PublicClaims())
 		}
 		return tv.handleLoginExchange(req, values)
 	} else if tv.anthropicEnabled && IsAnthropicTokenExchange(req) {
@@ -256,22 +256,14 @@ func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Va
 		}
 	}
 
-	if err := tv.chatGPTInjector.AcceptLoginTokens(upstreamBody); err != nil {
+	claims, err := tv.chatGPTInjector.AcceptLoginTokens(upstreamBody)
+	if err != nil {
 		log.Printf("ERROR login exchange: token acceptance failed")
 		return errorResponse(req, http.StatusInternalServerError, "Login token processing failed")
 	}
 
 	log.Printf("TOKEN_VEND host=%s path=%s (login exchange completed, real tokens persisted, synthetic response returned)", req.URL.Host, req.URL.Path)
-	return syntheticChatGPTResponse(req, tv.chatGPTPublicClaims())
-}
-
-// chatGPTPublicClaims returns the claims to expose in synthetic ID tokens,
-// or zero values when no injector or login is available.
-func (tv *TokenVendor) chatGPTPublicClaims() ChatGPTPublicClaims {
-	if tv.chatGPTInjector == nil {
-		return ChatGPTPublicClaims{}
-	}
-	return tv.chatGPTInjector.PublicClaims()
+	return syntheticChatGPTResponse(req, claims)
 }
 
 func syntheticChatGPTResponse(req *http.Request, claims ChatGPTPublicClaims) *http.Response {

@@ -419,8 +419,12 @@ func TestChatGPTAcceptLoginTokens(t *testing.T) {
 		"id_token":      testJWT(map[string]any{"chatgpt_account_id": "logged-in-account"}),
 		"expires_in":    3600,
 	})
-	if err := injector.AcceptLoginTokens(loginResp); err != nil {
+	claims, err := injector.AcceptLoginTokens(loginResp)
+	if err != nil {
 		t.Fatalf("AcceptLoginTokens failed: %v", err)
+	}
+	if claims.AccountID != "logged-in-account" {
+		t.Errorf("AcceptLoginTokens claims.AccountID = %q, want logged-in-account", claims.AccountID)
 	}
 
 	req2 := &http.Request{Header: make(http.Header)}
@@ -461,7 +465,7 @@ func TestChatGPTAcceptLoginTokens_Malformed(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := injector.AcceptLoginTokens(body); err == nil {
+			if _, err := injector.AcceptLoginTokens(body); err == nil {
 				t.Error("AcceptLoginTokens should reject malformed input")
 			}
 		})
@@ -485,5 +489,80 @@ func TestChatGPTNoCredentialAndNoLogLeakage(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), secret) {
 		t.Error("secret appeared in credential logs")
+	}
+}
+
+func TestChatGPTPublicClaims(t *testing.T) {
+	idToken := func(auth map[string]any) string {
+		return testJWT(map[string]any{chatGPTAuthNamespace: auth})
+	}
+	tests := []struct {
+		name      string
+		idToken   string
+		accountID string
+		want      ChatGPTPublicClaims
+	}{
+		{
+			name:    "all claims from id_token",
+			idToken: idToken(map[string]any{"chatgpt_account_id": "ws-a", "chatgpt_plan_type": "team", "chatgpt_account_is_fedramp": true}),
+			want:    ChatGPTPublicClaims{AccountID: "ws-a", PlanType: "team", FedRAMP: true},
+		},
+		{
+			name:      "account_id matching id_token keeps plan",
+			idToken:   idToken(map[string]any{"chatgpt_account_id": "ws-a", "chatgpt_plan_type": "team"}),
+			accountID: "ws-a",
+			want:      ChatGPTPublicClaims{AccountID: "ws-a", PlanType: "team"},
+		},
+		{
+			name:      "account_id selecting another workspace drops id_token plan",
+			idToken:   idToken(map[string]any{"chatgpt_account_id": "ws-a", "chatgpt_plan_type": "free", "chatgpt_account_is_fedramp": true}),
+			accountID: "ws-b",
+			want:      ChatGPTPublicClaims{AccountID: "ws-b"},
+		},
+		{
+			name:    "malformed fedramp keeps plan",
+			idToken: idToken(map[string]any{"chatgpt_account_id": "ws-a", "chatgpt_plan_type": "team", "chatgpt_account_is_fedramp": "false"}),
+			want:    ChatGPTPublicClaims{AccountID: "ws-a", PlanType: "team"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authPath := filepath.Join(t.TempDir(), "auth.json")
+			access := testJWT(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
+			writePrivateAuth(t, authPath, testAuthJSON(access, "refresh", tt.idToken, tt.accountID))
+			if got := NewChatGPTInjector(authPath, "").PublicClaims(); got != tt.want {
+				t.Errorf("PublicClaims() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChatGPTPublicClaims_NilInjector(t *testing.T) {
+	var injector *ChatGPTInjector
+	if got := injector.PublicClaims(); got != (ChatGPTPublicClaims{}) {
+		t.Errorf("nil PublicClaims() = %+v, want zero", got)
+	}
+}
+
+func TestChatGPTPublicClaims_LogsLoadFailure(t *testing.T) {
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	writePrivateAuth(t, authPath, testAuthJSON("access", "refresh-secret", "", "account"))
+	if err := os.Chmod(authPath, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousWriter)
+
+	if got := NewChatGPTInjector(authPath, "").PublicClaims(); got != (ChatGPTPublicClaims{}) {
+		t.Errorf("PublicClaims() = %+v, want zero on load failure", got)
+	}
+	if !strings.Contains(logs.String(), "insecure permissions") {
+		t.Errorf("load failure was not logged: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "refresh-secret") {
+		t.Error("log leaked auth file contents")
 	}
 }

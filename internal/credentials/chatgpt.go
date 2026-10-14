@@ -306,8 +306,10 @@ func (c *ChatGPTInjector) refreshLocked() error {
 }
 
 // AcceptLoginTokens processes a successful login exchange response,
-// persists the real tokens to StatePath, and updates in-memory state.
-func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) error {
+// persists the real tokens to StatePath, and updates in-memory state. It
+// returns the public claims of the stored login, read under the same lock so a
+// concurrent login cannot substitute its own claims.
+func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) (ChatGPTPublicClaims, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -318,7 +320,7 @@ func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) error {
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(responseBody, &raw); err != nil || raw.AccessToken == "" || raw.RefreshToken == "" {
-		return errors.New("login response is malformed or incomplete")
+		return ChatGPTPublicClaims{}, errors.New("login response is malformed or incomplete")
 	}
 
 	tokens := chatGPTTokens{
@@ -334,25 +336,25 @@ func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) error {
 	doc.fields["auth_mode"] = authMode
 	rawTokens, err := json.Marshal(tokens)
 	if err != nil {
-		return errors.New("marshal login tokens")
+		return ChatGPTPublicClaims{}, errors.New("marshal login tokens")
 	}
 	doc.fields["tokens"] = rawTokens
 	lastRefresh, _ := json.Marshal(c.config.Now().UTC().Format(time.RFC3339))
 	doc.fields["last_refresh"] = lastRefresh
 
 	if doc.accountID() == "" {
-		return errors.New("login response missing account id")
+		return ChatGPTPublicClaims{}, errors.New("login response missing account id")
 	}
 
 	if c.config.StatePath == "" {
-		return errors.New("state path not configured")
+		return ChatGPTPublicClaims{}, errors.New("state path not configured")
 	}
 	data, err := json.Marshal(doc.fields)
 	if err != nil {
-		return errors.New("marshal login state")
+		return ChatGPTPublicClaims{}, errors.New("marshal login state")
 	}
 	if err := atomicWritePrivateSecret(c.config.StatePath, data); err != nil {
-		return errors.New("persist login state")
+		return ChatGPTPublicClaims{}, errors.New("persist login state")
 	}
 
 	c.document = doc
@@ -362,7 +364,7 @@ func (c *ChatGPTInjector) AcceptLoginTokens(responseBody []byte) error {
 	}
 	c.loaded = true
 	c.loadErr = nil
-	return nil
+	return doc.publicClaims(), nil
 }
 
 func (d chatGPTDocument) accountID() string {
@@ -388,24 +390,49 @@ type ChatGPTPublicClaims struct {
 }
 
 // PublicClaims returns the non-secret claims of the current ChatGPT login, or
-// zero values when no login has completed yet. It never exposes tokens.
+// zero values when no injector is configured or no login has completed yet. It
+// never exposes tokens.
 func (c *ChatGPTInjector) PublicClaims() ChatGPTPublicClaims {
+	if c == nil {
+		return ChatGPTPublicClaims{}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.ensureLoadedLocked() != nil || c.document.tokens.RefreshToken == "" {
+	if err := c.ensureLoadedLocked(); err != nil {
+		log.Printf("WARN chatgpt public claims unavailable, synthetic id_token carries placeholder account: %v", err)
 		return ChatGPTPublicClaims{}
 	}
-	claims := ChatGPTPublicClaims{AccountID: c.accountIDLocked()}
-	var auth struct {
-		PlanType string `json:"chatgpt_plan_type"`
-		FedRAMP  bool   `json:"chatgpt_account_is_fedramp"`
+	if c.document.tokens.RefreshToken == "" {
+		return ChatGPTPublicClaims{}
 	}
-	if raw, ok := jwtClaims(c.document.tokens.IDToken)[chatGPTAuthNamespace]; ok && json.Unmarshal(raw, &auth) == nil {
-		claims.PlanType = auth.PlanType
-		claims.FedRAMP = auth.FedRAMP
+	return c.document.publicClaims()
+}
+
+// publicClaims returns the document's account ID together with the plan type
+// and FedRAMP flag. The plan and FedRAMP claims come from the ID token, so
+// they are only returned when that token describes the same account; a
+// tokens.account_id that selects a different workspace gets neither.
+func (d chatGPTDocument) publicClaims() ChatGPTPublicClaims {
+	claims := ChatGPTPublicClaims{AccountID: d.accountID()}
+	if accountIDFromIDToken(d.tokens.IDToken) != claims.AccountID {
+		return claims
 	}
+	auth := namespacedAuthClaims(d.tokens.IDToken)
+	// Decode each claim on its own so one malformed value doesn't drop the other.
+	_ = json.Unmarshal(auth["chatgpt_plan_type"], &claims.PlanType)
+	_ = json.Unmarshal(auth["chatgpt_account_is_fedramp"], &claims.FedRAMP)
 	return claims
+}
+
+// namespacedAuthClaims returns the claims under the OpenAI auth namespace of
+// an ID token, or nil when they are absent or malformed.
+func namespacedAuthClaims(token string) map[string]json.RawMessage {
+	var auth map[string]json.RawMessage
+	if json.Unmarshal(jwtClaims(token)[chatGPTAuthNamespace], &auth) != nil {
+		return nil
+	}
+	return auth
 }
 
 // jwtClaims decodes a JWT payload without verifying it. It returns nil when
@@ -437,12 +464,9 @@ func accountIDFromIDToken(token string) string {
 			return value
 		}
 	}
-	var namespaced map[string]json.RawMessage
-	if json.Unmarshal(claims[chatGPTAuthNamespace], &namespaced) == nil {
-		var value string
-		if json.Unmarshal(namespaced["chatgpt_account_id"], &value) == nil {
-			return value
-		}
+	var value string
+	if json.Unmarshal(namespacedAuthClaims(token)["chatgpt_account_id"], &value) == nil {
+		return value
 	}
 	return ""
 }
