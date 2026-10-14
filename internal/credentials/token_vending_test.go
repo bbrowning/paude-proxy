@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -124,6 +125,105 @@ func TestChatGPTTokenVendor_RefreshToken_ReturnsSynthetic(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !bytes.Contains(body, []byte("paude-proxy-managed-access")) {
 		t.Error("response should contain synthetic access token")
+	}
+	if got := syntheticIDTokenAuthClaims(t, body)["chatgpt_account_id"]; got != syntheticChatGPTAccountID {
+		t.Errorf("chatgpt_account_id = %v, want placeholder before login", got)
+	}
+}
+
+// syntheticIDTokenAuthClaims decodes the OpenAI auth claims from the id_token
+// in a synthetic ChatGPT token response.
+func syntheticIDTokenAuthClaims(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var resp tokenResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	parts := strings.Split(resp.IDToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("id_token is not a JWT: %q", resp.IDToken)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode id_token payload: %v", err)
+	}
+	var claims map[string]map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("decode id_token claims: %v", err)
+	}
+	return claims[chatGPTAuthNamespace]
+}
+
+func TestChatGPTTokenVendor_RealAccountIDAfterLogin(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "auth.json")
+	now := time.Unix(1_700_000_000, 0)
+	realAccess := testJWT(map[string]any{"exp": now.Add(time.Hour).Unix()})
+	realAuthClaims := map[string]any{
+		"chatgpt_account_id":         "real-account",
+		"chatgpt_plan_type":          "team",
+		"chatgpt_account_is_fedramp": true,
+		"chatgpt_user_id":            "user-123",
+	}
+	realID := testJWT(map[string]any{"email": "user@example.com", chatGPTAuthNamespace: realAuthClaims})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  realAccess,
+			"refresh_token": "real-refresh",
+			"id_token":      realID,
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	injector := NewChatGPTInjectorWithConfig(ChatGPTOAuthConfig{
+		StatePath:  statePath,
+		HTTPClient: chatGPTTestClient(t, server),
+		Now:        func() time.Time { return now },
+	})
+	vendor := NewChatGPTTokenVendor(injector)
+
+	exchange := func(form string) []byte {
+		t.Helper()
+		resp := vendor.HandleTokenExchange(&http.Request{
+			Method: http.MethodPost,
+			URL:    &url.URL{Host: "auth.openai.com", Path: "/oauth/token"},
+			Body:   io.NopCloser(strings.NewReader(form)),
+		})
+		if resp == nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("token exchange %q failed", form)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return body
+	}
+
+	// Ordered: the refresh exchange relies on the login having completed.
+	for _, step := range []struct{ name, form string }{
+		{"login", "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=test-code"},
+		{"refresh", "grant_type=refresh_token&refresh_token=paude-proxy-managed-refresh"},
+	} {
+		name := step.name
+		body := exchange(step.form)
+		auth := syntheticIDTokenAuthClaims(t, body)
+		if auth["chatgpt_account_id"] != "real-account" {
+			t.Errorf("%s: chatgpt_account_id = %v, want real-account", name, auth["chatgpt_account_id"])
+		}
+		if auth["chatgpt_plan_type"] != "team" {
+			t.Errorf("%s: chatgpt_plan_type = %v, want team", name, auth["chatgpt_plan_type"])
+		}
+		if auth["chatgpt_account_is_fedramp"] != true {
+			t.Errorf("%s: chatgpt_account_is_fedramp = %v, want true", name, auth["chatgpt_account_is_fedramp"])
+		}
+		if _, ok := auth["chatgpt_user_id"]; ok {
+			t.Errorf("%s: id_token should not copy unrelated claims", name)
+		}
+		for _, secret := range []string{realAccess, "real-refresh", realID, "user@example.com"} {
+			if bytes.Contains(body, []byte(secret)) {
+				t.Errorf("%s: response leaked %q", name, secret)
+			}
+		}
 	}
 }
 
