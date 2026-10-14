@@ -376,17 +376,59 @@ func (c *ChatGPTInjector) accountIDLocked() string {
 	return c.document.accountID()
 }
 
-func accountIDFromIDToken(token string) string {
+// ChatGPTPublicClaims holds the non-secret identity claims Codex keeps in its
+// local auth state. The account ID selects the ChatGPT workspace, and Codex
+// requires it to appear in /backend-api/wham/accounts/check before it starts
+// a session. It is not a credential, and the agent can already read it from
+// backend responses, so the token vendor returns it in synthetic ID tokens.
+type ChatGPTPublicClaims struct {
+	AccountID string
+	PlanType  string
+	FedRAMP   bool
+}
+
+// PublicClaims returns the non-secret claims of the current ChatGPT login, or
+// zero values when no login has completed yet. It never exposes tokens.
+func (c *ChatGPTInjector) PublicClaims() ChatGPTPublicClaims {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.ensureLoadedLocked() != nil || c.document.tokens.RefreshToken == "" {
+		return ChatGPTPublicClaims{}
+	}
+	claims := ChatGPTPublicClaims{AccountID: c.accountIDLocked()}
+	var auth struct {
+		PlanType string `json:"chatgpt_plan_type"`
+		FedRAMP  bool   `json:"chatgpt_account_is_fedramp"`
+	}
+	if raw, ok := jwtClaims(c.document.tokens.IDToken)[chatGPTAuthNamespace]; ok && json.Unmarshal(raw, &auth) == nil {
+		claims.PlanType = auth.PlanType
+		claims.FedRAMP = auth.FedRAMP
+	}
+	return claims
+}
+
+// jwtClaims decodes a JWT payload without verifying it. It returns nil when
+// the token is not a decodable JWT.
+func jwtClaims(token string) map[string]json.RawMessage {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return ""
+		return nil
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return ""
+		return nil
 	}
 	var claims map[string]json.RawMessage
 	if json.Unmarshal(payload, &claims) != nil {
+		return nil
+	}
+	return claims
+}
+
+func accountIDFromIDToken(token string) string {
+	claims := jwtClaims(token)
+	if claims == nil {
 		return ""
 	}
 	for _, key := range []string{"chatgpt_account_id", chatGPTAuthNamespace + ".chatgpt_account_id"} {
@@ -406,16 +448,8 @@ func accountIDFromIDToken(token string) string {
 }
 
 func jwtExpiry(token string) time.Time {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return time.Time{}
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return time.Time{}
-	}
-	var claims map[string]json.RawMessage
-	if json.Unmarshal(payload, &claims) != nil {
+	claims := jwtClaims(token)
+	if claims == nil {
 		return time.Time{}
 	}
 	var exp float64

@@ -198,7 +198,7 @@ func (tv *TokenVendor) HandleTokenExchange(req *http.Request) *http.Response {
 
 		if grantType == "refresh_token" {
 			log.Printf("TOKEN_VEND host=%s path=%s (returned synthetic token, real injection at request time)", req.URL.Host, req.URL.Path)
-			return syntheticChatGPTResponse(req)
+			return syntheticChatGPTResponse(req, tv.chatGPTPublicClaims())
 		}
 		return tv.handleLoginExchange(req, values)
 	} else if tv.anthropicEnabled && IsAnthropicTokenExchange(req) {
@@ -262,14 +262,23 @@ func (tv *TokenVendor) handleLoginExchange(req *http.Request, agentValues url.Va
 	}
 
 	log.Printf("TOKEN_VEND host=%s path=%s (login exchange completed, real tokens persisted, synthetic response returned)", req.URL.Host, req.URL.Path)
-	return syntheticChatGPTResponse(req)
+	return syntheticChatGPTResponse(req, tv.chatGPTPublicClaims())
 }
 
-func syntheticChatGPTResponse(req *http.Request) *http.Response {
+// chatGPTPublicClaims returns the claims to expose in synthetic ID tokens,
+// or zero values when no injector or login is available.
+func (tv *TokenVendor) chatGPTPublicClaims() ChatGPTPublicClaims {
+	if tv.chatGPTInjector == nil {
+		return ChatGPTPublicClaims{}
+	}
+	return tv.chatGPTInjector.PublicClaims()
+}
+
+func syntheticChatGPTResponse(req *http.Request, claims ChatGPTPublicClaims) *http.Response {
 	return jsonOKResponse(req, &tokenResponse{
 		AccessToken:  "paude-proxy-managed-access",
 		RefreshToken: "paude-proxy-managed-refresh",
-		IDToken:      syntheticChatGPTIDToken(),
+		IDToken:      syntheticChatGPTIDToken(claims),
 		ExpiresIn:    3600,
 		TokenType:    "Bearer",
 	})
@@ -311,13 +320,27 @@ func syntheticAnthropicResponse(req *http.Request) *http.Response {
 	})
 }
 
-func syntheticChatGPTIDToken() string {
+// syntheticChatGPTAccountID stands in for the account ID until a login has
+// completed and the real (non-secret) account ID is known.
+const syntheticChatGPTAccountID = "paude-proxy-managed-account"
+
+// syntheticChatGPTIDToken builds an unsigned ID token carrying only the
+// public claims Codex needs. The real account ID must be present because
+// Codex rejects sessions whose account is missing from workspace routing
+// discovery (/backend-api/wham/accounts/check).
+func syntheticChatGPTIDToken(public ChatGPTPublicClaims) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	claims := map[string]any{
-		"https://api.openai.com/auth": map[string]string{
-			"chatgpt_account_id": "paude-proxy-managed-account",
-		},
+	auth := map[string]any{"chatgpt_account_id": syntheticChatGPTAccountID}
+	if public.AccountID != "" {
+		auth["chatgpt_account_id"] = public.AccountID
 	}
+	if public.PlanType != "" {
+		auth["chatgpt_plan_type"] = public.PlanType
+	}
+	if public.FedRAMP {
+		auth["chatgpt_account_is_fedramp"] = true
+	}
+	claims := map[string]any{chatGPTAuthNamespace: auth}
 	payload, _ := json.Marshal(claims)
 	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".paude-proxy-managed"
 }

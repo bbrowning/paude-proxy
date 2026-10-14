@@ -302,7 +302,11 @@ Set `CHATGPT_AUTH_FILE` to a private, read-only Codex-compatible auth JSON file.
 
 Set `PAUDE_PROXY_CHATGPT_AUTH_STATE_FILE` to a proxy-only writable path if refresh-token rotation must survive proxy recreation. The proxy creates the containing directory with mode `0700`, writes state files with mode `0600`, and atomically replaces them. The source auth file must be owner-readable only (`0400` or `0600`). Never mount either file into the agent container.
 
-The agent should receive a synthetic Codex auth file containing dummy access, refresh, ID, and account values. The proxy intercepts only `POST https://auth.openai.com/oauth/token` and returns synthetic OAuth values; it never returns the real tokens.
+The agent should receive a synthetic Codex auth file containing dummy access, refresh, and ID tokens. The proxy intercepts only `POST https://auth.openai.com/oauth/token` and returns synthetic OAuth values; it never returns the real tokens.
+
+The synthetic ID token does carry the real ChatGPT account (workspace) ID, plus the non-secret `chatgpt_plan_type` and `chatgpt_account_is_fedramp` claims, once a login has completed. Before that, it carries the placeholder `paude-proxy-managed-account`. Codex checks the account ID against `/backend-api/wham/accounts/check` before every session and refuses to run if the account isn't listed. The account ID is an identifier, not a credential, and the agent could already read it from backend responses. The proxy still overwrites `ChatGPT-Account-ID` on every injected request, so the agent can't switch workspaces.
+
+Known limitation: workspaces whose `workspace_backend_origin` is not `chatgpt.com` (for example, data-residency workspaces) make Codex send model traffic to that origin. The proxy neither allowlists that host nor injects credentials there.
 
 ## Building
 

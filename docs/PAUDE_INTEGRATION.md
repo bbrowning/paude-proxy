@@ -136,12 +136,16 @@ The agent receives synthetic Codex auth state at its `$CODEX_HOME/auth.json`:
     "id_token": "<JWT-shaped synthetic ID token>",
     "access_token": "paude-proxy-managed-access",
     "refresh_token": "paude-proxy-managed-refresh",
-    "account_id": "paude-proxy-managed-account"
+    "account_id": "<real ChatGPT account ID>"
   }
 }
 ```
 
 The proxy intercepts only `POST https://auth.openai.com/oauth/token` and returns synthetic access, refresh, and ID tokens. The real access and refresh tokens are never returned to the agent.
+
+The synthetic ID token carries the real ChatGPT account (workspace) ID, plus the non-secret `chatgpt_plan_type` and `chatgpt_account_is_fedramp` claims, so Codex writes the real `account_id` above. Before any login has completed, it carries the placeholder `paude-proxy-managed-account`. Codex needs the real ID: before each session it calls `GET /backend-api/wham/accounts/check` and fails with "selected workspace missing from routing discovery" unless its account ID is listed. The account ID is not a credential, and the agent could already read it from backend responses. The proxy remains authoritative for the `ChatGPT-Account-ID` header.
+
+Sessions whose `auth.json` still holds the placeholder account ID (created by older proxy versions) must run `codex login` again.
 
 ### 6. Source IP filtering and network isolation
 
